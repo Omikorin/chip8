@@ -7,7 +7,7 @@ cooldown_days = 7
 freeze = true
 include_tags = "v*"
 exclude_tags = ["*-{alpha,beta,rc}*"]
-# repos = { "https://github.com/python-jsonschema/check-jsonschema" = { include_tags = "*" } }
+repos = { "https://github.com/python-jsonschema/check-jsonschema" = { include_tags = "*" } }
 
 [[repos]]
 repo = "builtin"
@@ -19,21 +19,21 @@ hooks = [
   { id = "check-json" },
   # { id = "check-json5" },
   { id = "check-toml" },
-  # { id = "check-yaml" },
+  { id = "check-yaml" },
 ]
 
-# [[repos]]
-# repo = "https://github.com/python-jsonschema/check-jsonschema"
-# rev = "12e63946db2c5cfcc9030fac21c3883ba88c6ed8"  # frozen: 0.38.0
-# hooks = [
-#   { id = "check-github-workflows" },
-#   # { id = "check-renovate" },
-# ]
+[[repos]]
+repo = "https://github.com/python-jsonschema/check-jsonschema"
+rev = "12e63946db2c5cfcc9030fac21c3883ba88c6ed8"  # frozen: 0.38.0
+hooks = [
+  { id = "check-github-workflows" },
+  # { id = "check-renovate" },
+]
 
 # zizmor detects security vulnerabilities in GitHub Actions workflows
-# [[repos]]
-# repo = "https://github.com/zizmorcore/zizmor-pre-commit"
-# rev = "451b56af716f9f0d0c2b816503a3fd0cf8b036fa"  # frozen: v1.29.0
-# hooks = [
-#   { id = "zizmor", args = ["--no-progress", "--fix"] },
-# ]
+[[repos]]
+repo = "https://github.com/zizmorcore/zizmor-pre-commit"
+rev = "451b56af716f9f0d0c2b816503a3fd0cf8b036fa"  # frozen: v1.29.0
+hooks = [
+  { id = "zizmor", args = ["--no-progress", "--fix"] },
+]

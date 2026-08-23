@@ -250,9 +250,9 @@ namespace hex::plugin::chip8 {
             inst.bytes = bytesStr;
 
             if (m_labels.contains(virtualAddress)) {
-                inst.mnemonic = fmt::format("{}:", m_labels[virtualAddress]);
+                inst.mnemonic = fmt::format(": {}", m_labels[virtualAddress]);
             } else {
-                inst.mnemonic = "db";
+                inst.mnemonic = "";
             }
 
             inst.operators = opsStr;

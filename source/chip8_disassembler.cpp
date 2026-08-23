@@ -82,6 +82,10 @@ namespace hex::plugin::chip8 {
                     auto targetOffset = virtualAddressToFileOffset(nnn);
                     if (targetOffset && targetOffset.value() < fileSize) {
                         worklist.push({targetOffset.value(), current_i});
+
+                        if (!m_labels.contains(nnn)) {
+                            m_labels[nnn] = fmt::format("label_{:03X}", nnn);
+                        }
                     }
                     if (firstNibble == 0x1) fallsThrough = false;
                     // calls eventually return (00EE), so the instruction after the call is executed later
@@ -141,6 +145,7 @@ namespace hex::plugin::chip8 {
         inst.address = instructionLoadAddress;
         inst.offset = instructionLoadAddress - imageBaseAddress;
 
+        u64 virtualAddress = instructionDataAddress + 0x200;
         auto type = m_addressTypes.contains(instructionDataAddress) ? m_addressTypes[instructionDataAddress] : AddressType::Unknown;
 
         if (type == AddressType::Code && code.size() >= 2) {
@@ -211,9 +216,15 @@ namespace hex::plugin::chip8 {
                     }
                     break;
             }
-        } else {
-            u64 virtualAddress = instructionDataAddress + 0x200;
 
+            if (m_labels.contains(virtualAddress)) {
+                if (inst.mnemonic.empty()) {
+                    inst.mnemonic = fmt::format(": {}", m_labels[virtualAddress]);
+                } else {
+                    inst.mnemonic = fmt::format(": {} {}", m_labels[virtualAddress], inst.mnemonic);
+                }
+            }
+        } else {
             size_t dataLen = 1;
             if (m_dataLengths.contains(instructionDataAddress)) {
                 dataLen = m_dataLengths[instructionDataAddress];

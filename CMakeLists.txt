@@ -1,15 +1,3 @@
-# ImHex Plugin Template
-# =====================
-
-# This is the official CMake template for making your own ImHex plugins
-# To use this template, copy the file into its own directory and modify it to your needs
-# For the most part, this is a regular CMake project with some extra functions provided by the ImHex SDK
-#
-# [NOTE FOR NON-C++ PLUGINS]
-# The template is laid out for a C++ plugin, however you can write your plugin in any language you want
-# and just make the plugin statically link against your code. The only thing that's required is a .cpp file with
-# the IMHEX_PLUGIN_SETUP() macro used in it. This macro is used to setup the plugin and register it with ImHex
-#
 # [CMAKE FUNCTIONS]
 # add_imhex_plugin(): Registers a new plugin
 #   NAME:           The name of the plugin

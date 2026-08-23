@@ -83,7 +83,9 @@ namespace hex::plugin::chip8 {
                     if (targetOffset && targetOffset.value() < fileSize) {
                         worklist.push({targetOffset.value(), current_i});
 
-                        if (!m_labels.contains(nnn)) {
+                        // create a label only if it is not a jump-to-self
+                        u16 currentVirtualAddress = offset + 0x200; // loop again
+                        if (nnn != currentVirtualAddress && !m_labels.contains(nnn)) {
                             m_labels[nnn] = fmt::format("label_{:03X}", nnn);
                         }
                     }
@@ -173,7 +175,15 @@ namespace hex::plugin::chip8 {
                     else if (opcode == 0x00EE) { inst.mnemonic = "return"; inst.operators = ""; }
                     else                       { inst.mnemonic = "invalid"; inst.operators = ""; }
                     break;
-                case 0x1: inst.mnemonic = "jump";  inst.operators = getTarget(nnn); break;
+                case 0x1:
+                    if (nnn == virtualAddress) {
+                        inst.mnemonic = "loop";
+                        inst.operators = "again";
+                    } else {
+                        inst.mnemonic = "jump";
+                        inst.operators = getTarget(nnn);
+                    }
+                    break;
                 case 0x2: inst.mnemonic = ":call"; inst.operators = getTarget(nnn); break;
                 case 0x3: inst.operators = fmt::format("if v{:X} != 0x{:02X} then", x, nn); break;
                 case 0x4: inst.operators = fmt::format("if v{:X} == 0x{:02X} then", x, nn); break;

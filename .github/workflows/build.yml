@@ -11,6 +11,10 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  BUILD_TYPE: Release
+  IMHEX_VERSION: "1.38.1"
+
 jobs:
   win:
     if: false
@@ -30,11 +34,10 @@ jobs:
 
       - name: Build
         run: |
-          mkdir build
-          cd build
+          mkdir build && cd build
           IMHEX_SDK_PATH="${{ steps.install_sdk.outputs.sdk_path }}"      \
             cmake -G Ninja                                                \
-            -DCMAKE_BUILD_TYPE=Release                                    \
+            -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }}                      \
             -DCMAKE_INSTALL_PREFIX="./install"                            \
             ..
           cmake --build .
@@ -64,8 +67,7 @@ jobs:
 
       - name: Build
         run: |
-          mkdir build
-          cd build
+          mkdir build && cd build
           CC=$(brew --prefix gcc@15)/bin/gcc-15                                                         \
           CXX=$(brew --prefix gcc@15)/bin/g++-15                                                        \
           OBJC=$(brew --prefix llvm)/bin/clang                                                          \
@@ -74,7 +76,7 @@ jobs:
           IMHEX_SDK_PATH="${{ steps.install_sdk.outputs.sdk_path }}"                                    \
             cmake                                                                                       \
             -G Ninja                                                                                    \
-            -DCMAKE_BUILD_TYPE=Release                                                                  \
+            -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }}                                                    \
             -DCMAKE_INSTALL_PREFIX="./install"                                                          \
             ..
           cmake --build .

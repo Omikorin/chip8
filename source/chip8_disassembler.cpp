@@ -15,6 +15,7 @@ namespace hex::plugin::chip8 {
     bool CHIP8Disassembler::start() {
         m_addressTypes.clear();
         m_labels.clear();
+        m_dataLengths.clear();
 
         // CHIP-8 virtual machine programs started historically at 0x200 but the file is not offseted
         u64 vmEntrypoint = 0x200;
@@ -109,9 +110,14 @@ namespace hex::plugin::chip8 {
 
                         auto spriteOffset = virtualAddressToFileOffset(current_i);
                         if (spriteOffset) {
+                            u64 offsetVal = spriteOffset.value();
+
+                            // use max() in case different instructions draw the same sprite with different heights
+                            m_dataLengths[offsetVal] = std::max<size_t>(m_dataLengths[offsetVal], n);
+
                             for (u16 idx = 0; idx < n; idx++) {
-                                if (spriteOffset.value() + idx < fileSize) {
-                                    m_addressTypes[spriteOffset.value() + idx] = AddressType::Sprite;
+                                if (offsetVal + idx < fileSize) {
+                                    m_addressTypes[offsetVal + idx] = AddressType::Sprite;
                                 }
                             }
                         }
@@ -206,10 +212,39 @@ namespace hex::plugin::chip8 {
                     break;
             }
         } else {
-            inst.size = 1;
-            inst.bytes = fmt::format("{:02X}", code[0]);
-            inst.mnemonic = "db";
-            inst.operators = fmt::format("0x{:02X}", code[0]);
+            u64 virtualAddress = instructionDataAddress + 0x200;
+
+            size_t dataLen = 1;
+            if (m_dataLengths.contains(instructionDataAddress)) {
+                dataLen = m_dataLengths[instructionDataAddress];
+            }
+
+            dataLen = std::max<size_t>(1, std::min<size_t>(dataLen, code.size()));
+
+            inst.size = dataLen;
+
+            std::string bytesStr;
+            std::string opsStr;
+
+            for (size_t i = 0; i < dataLen; ++i) {
+                bytesStr += fmt::format("{:02X}", code[i]);
+                opsStr += fmt::format("0x{:02X}", code[i]);
+
+                if (i < dataLen - 1) {
+                    bytesStr += " ";
+                    opsStr += " ";
+                }
+            }
+
+            inst.bytes = bytesStr;
+
+            if (m_labels.contains(virtualAddress)) {
+                inst.mnemonic = fmt::format("{}:", m_labels[virtualAddress]);
+            } else {
+                inst.mnemonic = "db";
+            }
+
+            inst.operators = opsStr;
         }
 
         return inst;

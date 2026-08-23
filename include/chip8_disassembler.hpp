@@ -31,6 +31,7 @@ namespace hex::plugin::chip8 {
     private:
         std::map<u64, AddressType> m_addressTypes;
         std::map<u64, std::string> m_labels;
+        std::map<u64, size_t> m_dataLengths;
 
         void analyzeControlFlow(u64 entryAddress);
     };

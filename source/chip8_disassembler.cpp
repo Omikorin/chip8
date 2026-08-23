@@ -16,50 +16,59 @@ namespace hex::plugin::chip8 {
         m_addressTypes.clear();
         m_labels.clear();
 
-        u64 entrypoint = 0x200;
-        m_labels[entrypoint] = "main";
+        // CHIP-8 virtual machine programs started historically at 0x200 but the file is not offseted
+        u64 vmEntrypoint = 0x200;
+        m_labels[vmEntrypoint] = "main";
 
-        analyzeControlFlow(entrypoint);
+        u64 fileOffset = 0x0;
+        analyzeControlFlow(fileOffset);
 
         return true;
     }
 
-    void CHIP8Disassembler::analyzeControlFlow(u64 startAddress) {
+    void CHIP8Disassembler::analyzeControlFlow(u64 startFileOffset) {
         auto provider = ImHexApi::Provider::get();
         if (provider == nullptr || !provider->isReadable() || provider->getActualSize() == 0)
             return;
 
         struct TraceState {
-            u64 pc;
+            u64 fileOffset;
             u16 i_reg;
         };
 
         std::queue<TraceState> worklist;
-        worklist.push({startAddress, 0});
+        worklist.push({startFileOffset, 0});
+
+        u64 fileSize = provider->getActualSize();
 
         while (!worklist.empty()) {
             TraceState state = worklist.front();
             worklist.pop();
 
-            u64 pc = state.pc;
+            u64 offset = state.fileOffset;
             u16 current_i = state.i_reg;
 
             // prevent infinite loops if we hit already analyzed code
-            if (m_addressTypes.contains(pc)) continue;
-            if (pc + 1 >= provider->getActualSize()) continue;
+            if (m_addressTypes.contains(offset)) continue;
+            if (offset + 1 >= fileSize) continue;
 
             u8 bytes[2] = {0};
-            provider->read(pc, bytes, 2);
+            provider->read(offset, bytes, 2);
             u16 opcode = (bytes[0] << 8) | bytes[1];
 
-            m_addressTypes[pc] = AddressType::Code;
-            m_addressTypes[pc + 1] = AddressType::Code;
+            m_addressTypes[offset] = AddressType::Code;
+            m_addressTypes[offset + 1] = AddressType::Code;
 
             u8 firstNibble = (opcode & 0xF000) >> 12;
             u16 nnn = opcode & 0x0FFF;
             u8 n = opcode & 0x000F; // for Dxyn
 
             bool fallsThrough = true; // does execution continue to pc + 2?
+
+            auto virtualAddressToFileOffset = [](u16 virtAddr) -> std::optional<u64> {
+                if (virtAddr >= 0x200) return virtAddr - 0x200;
+                return std::nullopt; // addresses below 0x200 point to the interpreter
+            };
 
             switch (firstNibble) {
                 case 0x0:
@@ -68,19 +77,23 @@ namespace hex::plugin::chip8 {
                     }
                     break;
                 case 0x1: // jump to NNN
-                    worklist.push({nnn, current_i});
-                    fallsThrough = false;
-                    break;
-                case 0x2: // call NNN
-                    worklist.push({nnn, current_i});
+                case 0x2: { // call NNN
+                    auto targetOffset = virtualAddressToFileOffset(nnn);
+                    if (targetOffset && targetOffset.value() < fileSize) {
+                        worklist.push({targetOffset.value(), current_i});
+                    }
+                    if (firstNibble == 0x1) fallsThrough = false;
                     // calls eventually return (00EE), so the instruction after the call is executed later
                     break;
+                }
                 case 0x3: // skip if vX == NN
                 case 0x4: // skip if vX != NN
                 case 0x5: // skip if vX == vY
                 case 0x9: // skip if vX != vY
-                    // execution can branch to pc + 4 if the condition is met
-                    worklist.push({pc + 4, current_i});
+                    if (offset + 3 < fileSize) {
+                        // execution can branch to pc + 4 if the condition is met
+                        worklist.push({offset + 4, current_i});
+                    }
                     break;
                 case 0xA: // i := NNN
                     current_i = nnn;
@@ -90,19 +103,25 @@ namespace hex::plugin::chip8 {
                     fallsThrough = false;
                     break;
                 case 0xD: // sprite vX vY N
-                    if (current_i != 0) {
+                    if (current_i >= 0x200) {
+                        // label using the virtual address
                         m_labels[current_i] = fmt::format("sprite_{:03X}", current_i);
 
-                        for (u16 offset = 0; offset < n; offset++) {
-                            m_addressTypes[current_i + offset] = AddressType::Sprite;
+                        auto spriteOffset = virtualAddressToFileOffset(current_i);
+                        if (spriteOffset) {
+                            for (u16 idx = 0; idx < n; idx++) {
+                                if (spriteOffset.value() + idx < fileSize) {
+                                    m_addressTypes[spriteOffset.value() + idx] = AddressType::Sprite;
+                                }
+                            }
                         }
                     }
                     break;
             }
 
             // add the next instruction to the queue if the flow allows it
-            if (fallsThrough) {
-                worklist.push({pc + 2, current_i});
+            if (fallsThrough && offset + 3 < fileSize) {
+                worklist.push({offset + 2, current_i});
             }
         }
     }

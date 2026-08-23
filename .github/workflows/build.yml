@@ -16,7 +16,7 @@ env:
   IMHEX_VERSION: "1.38.1"
 
 jobs:
-  win:
+  windows:
     if: false
     runs-on: windows-latest
     name: Windows

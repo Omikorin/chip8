@@ -27,6 +27,8 @@ namespace hex::plugin::chip8 {
 
         std::optional<Instruction> disassemble(u64 imageBaseAddress, u64 instructionLoadAddress, u64 instructionDataAddress, std::span<const u8> code) override;
         void drawSettings() override;
+        // TODO: enable when ImHex 1.39.0 is available
+        std::string getFormattedPatternLanguageType(u64 imageBaseAddress, u64 instructionLoadAddress); //override;
 
     private:
         std::map<u64, AddressType> m_addressTypes;

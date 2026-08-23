@@ -3,6 +3,8 @@
 #include <hex/api/imhex_api/provider.hpp>
 #include <hex/providers/provider.hpp>
 
+#include <fmt/format.h>
+
 #include <queue>
 namespace hex::plugin::chip8 {
 
@@ -27,12 +29,20 @@ namespace hex::plugin::chip8 {
         if (provider == nullptr || !provider->isReadable() || provider->getActualSize() == 0)
             return;
 
-        std::queue<u64> worklist;
-        worklist.push(startAddress);
+        struct TraceState {
+            u64 pc;
+            u16 i_reg;
+        };
+
+        std::queue<TraceState> worklist;
+        worklist.push({startAddress, 0});
 
         while (!worklist.empty()) {
-            u64 pc = worklist.front();
+            TraceState state = worklist.front();
             worklist.pop();
+
+            u64 pc = state.pc;
+            u16 current_i = state.i_reg;
 
             // prevent infinite loops if we hit already analyzed code
             if (m_addressTypes.contains(pc)) continue;
@@ -47,6 +57,7 @@ namespace hex::plugin::chip8 {
 
             u8 firstNibble = (opcode & 0xF000) >> 12;
             u16 nnn = opcode & 0x0FFF;
+            u8 n = opcode & 0x000F; // for Dxyn
 
             bool fallsThrough = true; // does execution continue to pc + 2?
 
@@ -57,11 +68,11 @@ namespace hex::plugin::chip8 {
                     }
                     break;
                 case 0x1: // jump to NNN
-                    worklist.push(nnn);
+                    worklist.push({nnn, current_i});
                     fallsThrough = false;
                     break;
                 case 0x2: // call NNN
-                    worklist.push(nnn);
+                    worklist.push({nnn, current_i});
                     // calls eventually return (00EE), so the instruction after the call is executed later
                     break;
                 case 0x3: // skip if vX == NN
@@ -69,17 +80,29 @@ namespace hex::plugin::chip8 {
                 case 0x5: // skip if vX == vY
                 case 0x9: // skip if vX != vY
                     // execution can branch to pc + 4 if the condition is met
-                    worklist.push(pc + 4);
+                    worklist.push({pc + 4, current_i});
+                    break;
+                case 0xA: // i := NNN
+                    current_i = nnn;
                     break;
                 case 0xB: // jump to NNN + v0
                     // v0 is dynamic, so we stop tracing this specific branch
                     fallsThrough = false;
                     break;
+                case 0xD: // sprite vX vY N
+                    if (current_i != 0) {
+                        m_labels[current_i] = fmt::format("sprite_{:03X}", current_i);
+
+                        for (u16 offset = 0; offset < n; offset++) {
+                            m_addressTypes[current_i + offset] = AddressType::Sprite;
+                        }
+                    }
+                    break;
             }
 
             // add the next instruction to the queue if the flow allows it
             if (fallsThrough) {
-                worklist.push(pc + 2);
+                worklist.push({pc + 2, current_i});
             }
         }
     }

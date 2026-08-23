@@ -110,7 +110,90 @@ namespace hex::plugin::chip8 {
     void CHIP8Disassembler::end() {}
 
     std::optional<Instruction> CHIP8Disassembler::disassemble(u64 imageBaseAddress, u64 instructionLoadAddress, u64 instructionDataAddress, std::span<const u8> code) {
-        return std::nullopt;
+        if (code.empty()) return std::nullopt;
+
+        Instruction inst;
+        inst.address = instructionLoadAddress;
+        inst.offset = instructionLoadAddress - imageBaseAddress;
+
+        auto type = m_addressTypes.contains(instructionDataAddress) ? m_addressTypes[instructionDataAddress] : AddressType::Unknown;
+
+        if (type == AddressType::Code && code.size() >= 2) {
+            inst.size = 2;
+            inst.bytes = fmt::format("{:02X} {:02X}", code[0], code[1]);
+
+            u16 opcode = (code[0] << 8) | code[1];
+            u8 firstNibble = (opcode & 0xF000) >> 12;
+            u8 x  = (opcode & 0x0F00) >> 8;
+            u8 y  = (opcode & 0x00F0) >> 4;
+            u8 n  = (opcode & 0x000F);
+            u8 nn = (opcode & 0x00FF);
+            u16 nnn = (opcode & 0x0FFF);
+
+            auto getTarget = [&](u16 targetAddr) -> std::string {
+                if (m_labels.contains(targetAddr)) return m_labels[targetAddr];
+                return fmt::format("0x{:03X}", targetAddr);
+            };
+
+            inst.mnemonic = "";
+
+            switch (firstNibble) {
+                case 0x0:
+                    if (opcode == 0x00E0)      { inst.mnemonic = "clear"; inst.operators = ""; }
+                    else if (opcode == 0x00EE) { inst.mnemonic = "return"; inst.operators = ""; }
+                    else                       { inst.mnemonic = "invalid"; inst.operators = ""; }
+                    break;
+                case 0x1: inst.mnemonic = "jump";  inst.operators = getTarget(nnn); break;
+                case 0x2: inst.mnemonic = ":call"; inst.operators = getTarget(nnn); break;
+                case 0x3: inst.operators = fmt::format("if v{:X} != 0x{:02X} then", x, nn); break;
+                case 0x4: inst.operators = fmt::format("if v{:X} == 0x{:02X} then", x, nn); break;
+                case 0x5: inst.operators = fmt::format("if v{:X} != v{:X} then", x, y); break;
+                case 0x6: inst.operators = fmt::format("v{:X} := 0x{:02X}", x, nn); break;
+                case 0x7: inst.operators = fmt::format("v{:X} += 0x{:02X}", x, nn); break;
+                case 0x8:
+                    switch (n) {
+                        case 0x0: inst.operators = fmt::format("v{:X} := v{:X}", x, y); break;
+                        case 0x1: inst.operators = fmt::format("v{:X} |= v{:X}", x, y); break;
+                        case 0x2: inst.operators = fmt::format("v{:X} &= v{:X}", x, y); break;
+                        case 0x3: inst.operators = fmt::format("v{:X} ^= v{:X}", x, y); break;
+                        case 0x4: inst.operators = fmt::format("v{:X} += v{:X}", x, y); break;
+                        case 0x5: inst.operators = fmt::format("v{:X} -= v{:X}", x, y); break;
+                        case 0x6: inst.operators = fmt::format("v{:X} >>= v{:X}", x, y); break;
+                        case 0x7: inst.operators = fmt::format("v{:X} =- v{:X}", x, y); break;
+                        case 0xE: inst.operators = fmt::format("v{:X} <<= v{:X}", x, y); break;
+                    }
+                    break;
+                case 0x9: inst.operators = fmt::format("if v{:X} == v{:X} then", x, y); break;
+                case 0xA: inst.operators = fmt::format("i := {}", getTarget(nnn)); break;
+                case 0xB: inst.mnemonic = "jump0"; inst.operators = getTarget(nnn); break;
+                case 0xC: inst.operators = fmt::format("v{:X} := random 0x{:02X}", x, nn); break;
+                case 0xD: inst.mnemonic = "sprite"; inst.operators = fmt::format("v{:X} v{:X} {}", x, y, n); break;
+                case 0xE:
+                    if (nn == 0x9E)      inst.operators = fmt::format("if v{:X} -key then", x);
+                    else if (nn == 0xA1) inst.operators = fmt::format("if v{:X} key then", x);
+                    break;
+                case 0xF:
+                    switch (nn) {
+                        case 0x07: inst.operators = fmt::format("v{:X} := delay", x); break;
+                        case 0x0A: inst.operators = fmt::format("v{:X} := key", x); break;
+                        case 0x15: inst.operators = fmt::format("delay := v{:X}", x); break;
+                        case 0x18: inst.operators = fmt::format("buzzer := v{:X}", x); break;
+                        case 0x1E: inst.operators = fmt::format("i += v{:X}", x); break;
+                        case 0x29: inst.operators = fmt::format("i := hex v{:X}", x); break;
+                        case 0x33: inst.mnemonic = "bcd";  inst.operators = fmt::format("v{:X}", x); break;
+                        case 0x55: inst.mnemonic = "save"; inst.operators = fmt::format("v{:X}", x); break;
+                        case 0x65: inst.mnemonic = "load"; inst.operators = fmt::format("v{:X}", x); break;
+                    }
+                    break;
+            }
+        } else {
+            inst.size = 1;
+            inst.bytes = fmt::format("{:02X}", code[0]);
+            inst.mnemonic = "db";
+            inst.operators = fmt::format("0x{:02X}", code[0]);
+        }
+
+        return inst;
     }
 
     void CHIP8Disassembler::drawSettings() {}

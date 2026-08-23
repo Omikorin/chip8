@@ -5,7 +5,17 @@
 using hex::ContentRegistry::Disassemblers::Architecture;
 using hex::ContentRegistry::Disassemblers::Instruction;
 
+#include <map>
+#include <string>
+
 namespace hex::plugin::chip8 {
+
+    enum class AddressType {
+        Unknown,
+        Code,
+        Data,
+        Sprite
+    };
 
     class CHIP8Disassembler : public Architecture {
     public:
@@ -19,5 +29,9 @@ namespace hex::plugin::chip8 {
         void drawSettings() override;
 
     private:
+        std::map<u64, AddressType> m_addressTypes;
+        std::map<u64, std::string> m_labels;
+
+        void analyzeControlFlow(u64 entryAddress);
     };
 }

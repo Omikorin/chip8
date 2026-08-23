@@ -1,21 +1,33 @@
 name: Build
-on: []
+
+on:
+  push:
+    branches: ['main']
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
   win:
-    runs-on: windows-2022
+    if: false
+    runs-on: windows-latest
     name: Windows
     defaults:
       run:
         shell: msys2 {0}
+
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
-        with:
-          submodules: recursive
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
       - name: Install SDK
         id: install_sdk
-        uses: WerWolv/imhex-download-sdk@v1.32.2
+        uses: WerWolv/imhex-download-sdk@v1.38.1
+
       - name: Build
         run: |
           mkdir build
@@ -27,31 +39,35 @@ jobs:
             ..
           cmake --build .
           cmake --install .
+
       - name: Upload Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: windows-build
           path: build/install
+
   macos:
-    runs-on: macos-12
+    if: false
+    runs-on: macos-latest
     name: MacOS
     defaults:
       run:
         shell: bash {0}
+
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
-        with:
-          submodules: recursive
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
       - name: Install SDK
         id: install_sdk
-        uses: WerWolv/imhex-download-sdk@v1.32.2
+        uses: WerWolv/imhex-download-sdk@v1.38.1
+
       - name: Build
         run: |
           mkdir build
           cd build
-          CC=$(brew --prefix gcc@12)/bin/gcc-12                                                         \
-          CXX=$(brew --prefix gcc@12)/bin/g++-12                                                        \
+          CC=$(brew --prefix gcc@15)/bin/gcc-15                                                         \
+          CXX=$(brew --prefix gcc@15)/bin/g++-15                                                        \
           OBJC=$(brew --prefix llvm)/bin/clang                                                          \
           OBJCXX=$(brew --prefix llvm)/bin/clang++                                                      \
           PKG_CONFIG_PATH="$(brew --prefix openssl)/lib/pkgconfig":"$(brew --prefix)/lib/pkgconfig"     \
@@ -63,8 +79,9 @@ jobs:
             ..
           cmake --build .
           cmake --install .
+
       - name: Upload Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: macos-build
           path: build/install

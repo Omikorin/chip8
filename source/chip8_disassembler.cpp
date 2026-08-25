@@ -76,6 +76,8 @@ namespace hex::plugin::chip8 {
                 case 0x0:
                     if (opcode == 0x00EE) { // return from subroutine
                         fallsThrough = false;
+                    } else if (m_variant == ChipVariant::SuperChip && opcode == 0x00FD) { // exit interpreter
+                        fallsThrough = false;
                     }
                     break;
                 case 0x1: // jump to NNN
@@ -107,6 +109,7 @@ namespace hex::plugin::chip8 {
                     current_i = nnn;
                     break;
                 case 0xB: // jump to NNN + v0
+                    // jump to XNN + vX for SUPER-CHIP
                     // v0 is dynamic, so we stop tracing this specific branch
                     fallsThrough = false;
                     break;
@@ -119,8 +122,13 @@ namespace hex::plugin::chip8 {
                         if (spriteOffset) {
                             u64 offsetVal = spriteOffset.value();
 
-                            // use max() in case different instructions draw the same sprite with different heights
-                            m_dataLengths[offsetVal] = std::max<size_t>(m_dataLengths[offsetVal], n);
+                            // sprite vX vY 0 additionally for SUPER-CHIP and later
+                            if (m_variant == ChipVariant::SuperChip && n == 0) { // Dxy0
+                                m_dataLengths[offsetVal] = std::max<size_t>(m_dataLengths[offsetVal], 16);
+                            } else {
+                                // use max() in case different instructions draw the same sprite with different heights
+                                m_dataLengths[offsetVal] = std::max<size_t>(m_dataLengths[offsetVal], n);
+                            }
 
                             for (u16 idx = 0; idx < n; idx++) {
                                 if (offsetVal + idx < fileSize) {
@@ -174,7 +182,13 @@ namespace hex::plugin::chip8 {
                 case 0x0:
                     if (opcode == 0x00E0)      { inst.mnemonic = "clear"; inst.operators = ""; }
                     else if (opcode == 0x00EE) { inst.mnemonic = "return"; inst.operators = ""; }
-                    else                       { inst.mnemonic = "invalid"; inst.operators = ""; }
+                    else if (m_variant == ChipVariant::SuperChip && ((opcode & 0xFFF0) == 0x00C0)) { inst.mnemonic = "scroll-down"; inst.operators = fmt::format("{}", n); }
+                    else if (m_variant == ChipVariant::SuperChip && opcode == 0x00FB) { inst.mnemonic = "scroll-right"; inst.operators = ""; }
+                    else if (m_variant == ChipVariant::SuperChip && opcode == 0x00FC) { inst.mnemonic = "scroll-left"; inst.operators = ""; }
+                    else if (m_variant == ChipVariant::SuperChip && opcode == 0x00FD) { inst.mnemonic = "exit"; inst.operators = ""; }
+                    else if (m_variant == ChipVariant::SuperChip && opcode == 0x00FE) { inst.mnemonic = "lores"; inst.operators = ""; }
+                    else if (m_variant == ChipVariant::SuperChip && opcode == 0x00FF) { inst.mnemonic = "hires"; inst.operators = ""; }
+                    else { inst.mnemonic = "invalid"; inst.operators = ""; }
                     break;
                 case 0x1:
                     if (nnn == virtualAddress) {
@@ -206,9 +220,17 @@ namespace hex::plugin::chip8 {
                     break;
                 case 0x9: inst.operators = fmt::format("if v{:X} == v{:X} then", x, y); break;
                 case 0xA: inst.operators = fmt::format("i := {}", getTarget(nnn)); break;
-                case 0xB: inst.mnemonic = "jump0"; inst.operators = getTarget(nnn); break;
+                case 0xB:
+                    if (m_variant == ChipVariant::SuperChip) {
+                        inst.mnemonic = "jump0";
+                        inst.operators = fmt::format("{} v{:X}", getTarget(nnn), x);
+                    } else {
+                        inst.mnemonic = "jump0";
+                        inst.operators = getTarget(nnn);
+                    }
+                    break;
                 case 0xC: inst.operators = fmt::format("v{:X} := random 0x{:02X}", x, nn); break;
-                case 0xD: inst.mnemonic = "sprite"; inst.operators = fmt::format("v{:X} v{:X} {}", x, y, n); break;
+                case 0xD: inst.mnemonic = "sprite"; inst.operators = fmt::format("v{:X} v{:X} {}", x, y, n); break; // Dxyn and Dxy0
                 case 0xE:
                     if (nn == 0x9E)      inst.operators = fmt::format("if v{:X} -key then", x);
                     else if (nn == 0xA1) inst.operators = fmt::format("if v{:X} key then", x);
@@ -221,9 +243,12 @@ namespace hex::plugin::chip8 {
                         case 0x18: inst.operators = fmt::format("buzzer := v{:X}", x); break;
                         case 0x1E: inst.operators = fmt::format("i += v{:X}", x); break;
                         case 0x29: inst.operators = fmt::format("i := hex v{:X}", x); break;
+                        case 0x30: if (m_variant == ChipVariant::SuperChip) inst.operators = fmt::format("i := bighex v{:X}", x); break;
                         case 0x33: inst.mnemonic = "bcd";  inst.operators = fmt::format("v{:X}", x); break;
                         case 0x55: inst.mnemonic = "save"; inst.operators = fmt::format("v{:X}", x); break;
                         case 0x65: inst.mnemonic = "load"; inst.operators = fmt::format("v{:X}", x); break;
+                        case 0x75: if (m_variant == ChipVariant::SuperChip) inst.mnemonic = "saveflags"; inst.operators = fmt::format("v{:X}", x); break;
+                        case 0x85: if (m_variant == ChipVariant::SuperChip) inst.mnemonic = "loadflags"; inst.operators = fmt::format("v{:X}", x); break;
                     }
                     break;
             }

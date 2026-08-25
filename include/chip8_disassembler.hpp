@@ -17,6 +17,12 @@ namespace hex::plugin::chip8 {
         Sprite
     };
 
+    enum class ChipVariant {
+        Chip8,
+        SuperChip,
+        XOChip
+    };
+
     class CHIP8Disassembler : public Architecture {
     public:
         explicit CHIP8Disassembler();
@@ -34,6 +40,9 @@ namespace hex::plugin::chip8 {
         std::map<u64, AddressType> m_addressTypes;
         std::map<u64, std::string> m_labels;
         std::map<u64, size_t> m_dataLengths;
+
+        int m_variantIndex = 0;
+        ChipVariant m_variant = ChipVariant::Chip8;
 
         void analyzeControlFlow(u64 entryAddress);
     };

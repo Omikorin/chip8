@@ -4,6 +4,7 @@
 #include <hex/providers/provider.hpp>
 
 #include <fmt/format.h>
+#include <imgui.h>
 
 #include <queue>
 namespace hex::plugin::chip8 {
@@ -271,7 +272,26 @@ namespace hex::plugin::chip8 {
         return inst;
     }
 
-    void CHIP8Disassembler::drawSettings() {}
+    void CHIP8Disassembler::drawSettings() {
+        constexpr static std::pair<const char*, ChipVariant> Variants[] = {
+            { "CHIP-8",     ChipVariant::Chip8 },
+            { "Super-CHIP", ChipVariant::SuperChip },
+            { "XO-CHIP",    ChipVariant::XOChip }
+        };
+
+        if (ImGui::BeginCombo("Variant", Variants[m_variantIndex].first)) {
+            for (i32 i = 0; i < IM_ARRAYSIZE(Variants); i++) {
+                bool isSelected = (m_variantIndex == i);
+                if (ImGui::Selectable(Variants[i].first, isSelected)) {
+                    if (!isSelected) {
+                        m_variantIndex = i;
+                        m_variant = Variants[m_variantIndex].second;
+                    }
+                }
+            }
+            ImGui::EndCombo();
+        }
+    }
 
     std::string CHIP8Disassembler::getFormattedPatternLanguageType(u64 imageBaseAddress, u64 instructionLoadAddress) {
         return "hex::type::Instruction<\"chip-8\", \"default\", 0x00, 0x00>";

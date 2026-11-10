@@ -32,8 +32,8 @@ It lives in the [custom directory](./custom/disassemblers/chip-8.json).
 
 ### Requirements
 
-- mise 2026.10.4+
-- prek 0.5.5+
+- mise
+- prek
 
 ### Setup tooling
 

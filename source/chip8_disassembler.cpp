@@ -92,7 +92,10 @@ namespace hex::plugin::chip8 {
                             m_labels[nnn] = fmt::format("label_{:03X}", nnn);
                         }
                     }
+
+                    // a jump discards anything after it
                     if (firstNibble == 0x1) fallsThrough = false;
+
                     // calls eventually return (00EE), so the instruction after the call is executed later
                     break;
                 }

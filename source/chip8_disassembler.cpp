@@ -103,7 +103,8 @@ namespace hex::plugin::chip8 {
                 case 0x4: // skip if vX != NN
                 case 0x5: // skip if vX == vY
                 case 0x9: // skip if vX != vY
-                    if (offset + 3 < fileSize) {
+                    // 5xy0 and 9xy0 are only valid with n == 0
+                    if ((firstNibble == 0x3 || firstNibble == 0x4 || n == 0) && offset + 3 < fileSize) {
                         // execution can branch to pc + 4 if the condition is met
                         worklist.push({offset + 4, current_i});
                     }
@@ -205,7 +206,7 @@ namespace hex::plugin::chip8 {
                 case 0x2: inst.mnemonic = ":call"; inst.operators = getTarget(nnn); break;
                 case 0x3: inst.operators = fmt::format("if v{:X} != 0x{:02X} then", x, nn); break;
                 case 0x4: inst.operators = fmt::format("if v{:X} == 0x{:02X} then", x, nn); break;
-                case 0x5: inst.operators = fmt::format("if v{:X} != v{:X} then", x, y); break;
+                case 0x5: if (n == 0) inst.operators = fmt::format("if v{:X} != v{:X} then", x, y); break;
                 case 0x6: inst.operators = fmt::format("v{:X} := 0x{:02X}", x, nn); break;
                 case 0x7: inst.operators = fmt::format("v{:X} += 0x{:02X}", x, nn); break;
                 case 0x8:
@@ -221,7 +222,7 @@ namespace hex::plugin::chip8 {
                         case 0xE: inst.operators = fmt::format("v{:X} <<= v{:X}", x, y); break;
                     }
                     break;
-                case 0x9: inst.operators = fmt::format("if v{:X} == v{:X} then", x, y); break;
+                case 0x9: if (n == 0) inst.operators = fmt::format("if v{:X} == v{:X} then", x, y); break;
                 case 0xA: inst.operators = fmt::format("i := {}", getTarget(nnn)); break;
                 case 0xB:
                     if (m_variant == ChipVariant::SuperChip) {

@@ -7,7 +7,9 @@
 #include <fmt/format.h>
 #include <imgui.h>
 
+#include <algorithm>
 #include <queue>
+#include <vector>
 namespace hex::plugin::chip8 {
 
     CHIP8Disassembler::CHIP8Disassembler() : Architecture("CHIP-8") {}
@@ -22,6 +24,7 @@ namespace hex::plugin::chip8 {
         m_codeStarts.clear();
         m_jumpSources.clear();
         m_callTargets.clear();
+        m_whileJumps.clear();
         m_routineSummaries.clear();
         m_activeRoutines.clear();
 
@@ -39,7 +42,72 @@ namespace hex::plugin::chip8 {
         m_labels[0x200] = "main";
 
         traceRoutine(0x0, std::nullopt);
+
+        if (m_guessPreprocessor && m_syntax == Syntax::Octo)
+            findWhileExits();
+
         groupData(provider->getActualSize());
+    }
+
+    // Octo compiles loop while to a skip and a jump to the instruction behind the closing again
+    void CHIP8Disassembler::findWhileExits() {
+        auto provider = ImHexApi::Provider::get();
+
+        // file offsets of the first instruction of a loop and of the jump that closes it
+        struct Loop {
+            u64 head, jump;
+        };
+
+        std::vector<Loop> loops;
+        for (const auto& [target, sources] : m_jumpSources) {
+            if (isLoopHead(target))
+                loops.push_back({ u64(target - 0x200), *sources.begin() });
+        }
+
+        // a skip, or a comparison of three instructions, directly before the jump
+        auto hasCondition = [&](u64 jumpOffset) {
+            if (jumpOffset >= 6) {
+                u8 bytes[6] = {0};
+                provider->read(jumpOffset - 6, bytes, 6);
+                if (!guessComparison(jumpOffset - 6, bytes, false).empty()) return true;
+            }
+
+            if (jumpOffset < 2 || !m_codeStarts.contains(jumpOffset - 2)) return false;
+
+            u8 bytes[2] = {0};
+            provider->read(jumpOffset - 2, bytes, 2);
+            const u16 opcode = (bytes[0] << 8) | bytes[1];
+            const OpcodeDef* def = decodeOpcode(opcode, m_variant);
+
+            return def != nullptr && def->flow == Flow::Skip && !skipCondition(opcode, false).empty();
+        };
+
+        for (const Loop& loop : loops) {
+            const u16 exit = u16(loop.jump + 2 + 0x200);
+
+            auto sources = m_jumpSources.find(exit);
+            if (sources == m_jumpSources.end() || m_callTargets.contains(exit)) continue;
+
+            auto label = m_labels.find(exit);
+            if (label != m_labels.end() && !label->second.starts_with("label_")) continue;
+
+            // while only leaves the innermost loop, so jumps from a nested loop are something else
+            auto isWhileJump = [&](u64 jumpOffset) {
+                if (jumpOffset < loop.head || jumpOffset >= loop.jump) return false;
+                if (m_labels.contains(jumpOffset + 0x200) || !hasCondition(jumpOffset)) return false;
+
+                return std::none_of(loops.begin(), loops.end(), [&](const Loop& inner) {
+                    return inner.head != loop.head && inner.head >= loop.head && inner.jump <= loop.jump &&
+                           jumpOffset >= inner.head && jumpOffset < inner.jump;
+                });
+            };
+
+            // any other way to reach the instruction behind the loop means its label is real
+            if (!std::ranges::all_of(sources->second, isWhileJump)) continue;
+
+            m_whileJumps.insert(sources->second.begin(), sources->second.end());
+            m_labels.erase(exit);
+        }
     }
 
     void CHIP8Disassembler::groupData(u64 fileSize) {
@@ -331,6 +399,37 @@ namespace hex::plugin::chip8 {
         return fmt::format("{}{:02X}", hexPrefix(), value);
     }
 
+    static std::string_view invertComparison(std::string_view op) {
+        if (op == "<") return ">=";
+        if (op == ">=") return "<";
+        if (op == ">") return "<=";
+        return ">";
+    }
+
+    // Octo's if ... then runs its statement when the skip is not taken, so negate gives the while form of the same jump
+    std::string CHIP8Disassembler::skipCondition(u16 opcode, bool negate) const {
+        const OpcodeFields fields = splitOpcode(opcode);
+
+        switch (opcode & 0xF000) {
+            case 0x3000: // skip if vX == NN
+                return fmt::format("v{:X} {} {}", fields.x, negate ? "==" : "!=", formatByte(fields.nn));
+            case 0x4000: // skip if vX != NN
+                return fmt::format("v{:X} {} {}", fields.x, negate ? "!=" : "==", formatByte(fields.nn));
+            case 0x5000: // skip if vX == vY
+                if (fields.n == 0) return fmt::format("v{:X} {} v{:X}", fields.x, negate ? "==" : "!=", fields.y);
+                break;
+            case 0x9000: // skip if vX != vY
+                if (fields.n == 0) return fmt::format("v{:X} {} v{:X}", fields.x, negate ? "!=" : "==", fields.y);
+                break;
+            case 0xE000:
+                if (fields.nn == 0x9E) return fmt::format("v{:X} {}", fields.x, negate ? "key" : "-key"); // skip if key
+                if (fields.nn == 0xA1) return fmt::format("v{:X} {}", fields.x, negate ? "-key" : "key"); // skip if not key
+                break;
+        }
+
+        return "";
+    }
+
     bool CHIP8Disassembler::isLoopHead(u16 virtualAddress) const {
         auto sources = m_jumpSources.find(virtualAddress);
         if (sources == m_jumpSources.end() || sources->second.size() != 1 || m_callTargets.contains(virtualAddress))
@@ -351,7 +450,7 @@ namespace hex::plugin::chip8 {
     // if vF == 0 then
     // jump label_3B3
     //
-    std::string CHIP8Disassembler::guessComparison(u64 dataAddress, std::span<const u8> code) const {
+    std::string CHIP8Disassembler::guessComparison(u64 dataAddress, std::span<const u8> code, bool negate) const {
         if (code.size() < 6) return "";
 
         // the three instructions have to be traced code and nothing may jump into the middle of them
@@ -381,21 +480,17 @@ namespace hex::plugin::chip8 {
         const bool flagSet = skip == 0x3F00;
 
         if (loadsConstant) {
-            const std::string constant = formatByte(load & 0x00FF);
+            const std::string_view op = subtracts ? (flagSet ? "<=" : ">") : (flagSet ? ">=" : "<");
 
-            if (subtracts)
-                return fmt::format("v{:X} {} {} then", right, flagSet ? "<=" : ">", constant);
-
-            return fmt::format("v{:X} {} {} then", right, flagSet ? ">=" : "<", constant);
+            return fmt::format("v{:X} {} {}", right, negate ? invertComparison(op) : op, formatByte(load & 0x00FF));
         }
 
         const u8 left = (load & 0x00F0) >> 4;
         if (left == 0xF) return "";
 
-        if (subtracts)
-            return fmt::format("v{:X} {} v{:X} then", left, flagSet ? ">=" : "<", right);
+        const std::string_view op = subtracts ? (flagSet ? ">=" : "<") : (flagSet ? "<=" : ">");
 
-        return fmt::format("v{:X} {} v{:X} then", left, flagSet ? "<=" : ">", right);
+        return fmt::format("v{:X} {} v{:X}", left, negate ? invertComparison(op) : op, right);
     }
 
     // ImHex drops lines with an empty mnemonic when exporting, so Octo statements move their first token there
@@ -446,9 +541,18 @@ namespace hex::plugin::chip8 {
             const bool guessOcto = m_guessPreprocessor && m_syntax == Syntax::Octo;
 
             std::string comparison;
-            if (guessOcto) {
-                comparison = guessComparison(instructionDataAddress, code);
-                if (!comparison.empty()) size = 6;
+            if (guessOcto) comparison = guessComparison(instructionDataAddress, code, false);
+
+            // a skip right before a loop exit jump is Octo's while, and both become one row
+            const size_t conditionSize = comparison.empty() ? size : 6;
+            const bool isSkip = !comparison.empty() || (def != nullptr && def->flow == Flow::Skip);
+            const bool isWhile = guessOcto && isSkip && code.size() >= conditionSize + 2 &&
+                                 m_whileJumps.contains(instructionDataAddress + conditionSize);
+
+            if (isWhile) {
+                size = conditionSize + 2;
+            } else if (!comparison.empty()) {
+                size = 6;
             }
 
             inst.size = size;
@@ -458,13 +562,16 @@ namespace hex::plugin::chip8 {
                 inst.bytes += fmt::format("{:02X}", code[i]);
             }
 
-            u16 immediate = size == 4 ? u16((code[2] << 8) | code[3]) : 0;
+            u16 immediate = (def != nullptr && def->size == 4) ? u16((code[2] << 8) | code[3]) : 0;
 
             auto byteFormatter = [this](u8 value) { return formatByte(value); };
 
-            if (!comparison.empty()) {
+            if (isWhile) {
+                inst.mnemonic = "while";
+                inst.operators = !comparison.empty() ? guessComparison(instructionDataAddress, code, true) : skipCondition(opcode, true);
+            } else if (!comparison.empty()) {
                 inst.mnemonic = "if";
-                inst.operators = comparison;
+                inst.operators = comparison + " then";
             } else if (def == nullptr) {
                 inst.mnemonic = "invalid";
                 inst.operators = "";

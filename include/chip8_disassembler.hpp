@@ -45,6 +45,7 @@ namespace hex::plugin::chip8 {
 
         std::map<u16, std::set<u64>> m_jumpSources; // file offsets of the jumps to a virtual address
         std::set<u16> m_callTargets;
+        std::set<u64> m_whileJumps; // file offsets of loop exit jumps that Octo writes as while
 
         using RoutineKey = std::pair<u64, std::optional<u16>>; // file offset and i on entry, nullopt if unknown
         std::map<RoutineKey, std::optional<u16>> m_routineSummaries; // i on return
@@ -58,11 +59,13 @@ namespace hex::plugin::chip8 {
 
         void analyzeControlFlow();
         void groupData(u64 fileSize);
+        void findWhileExits();
         std::optional<u16> traceRoutine(u64 entryFileOffset, std::optional<u16> entryI);
         const char* hexPrefix() const;
         std::string formatByte(u8 value) const;
         bool isLoopHead(u16 virtualAddress) const;
-        std::string guessComparison(u64 dataAddress, std::span<const u8> code) const;
+        std::string guessComparison(u64 dataAddress, std::span<const u8> code, bool negate) const;
+        std::string skipCondition(u16 opcode, bool negate) const;
         std::string labelPrefix(const std::string& label, const std::string& mnemonic) const;
     };
 }

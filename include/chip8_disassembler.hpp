@@ -43,5 +43,7 @@ namespace hex::plugin::chip8 {
         Syntax m_syntax = Syntax::Octo;
 
         void analyzeControlFlow(u64 entryAddress);
+        const char* hexPrefix() const;
+        std::string labelPrefix(const std::string& label, const std::string& mnemonic) const;
     };
 }

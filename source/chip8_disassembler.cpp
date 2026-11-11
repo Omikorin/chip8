@@ -195,6 +195,18 @@ namespace hex::plugin::chip8 {
 
     void CHIP8Disassembler::end() {}
 
+    const char* CHIP8Disassembler::hexPrefix() const {
+        return m_syntax == Syntax::Chipper ? "#" : "0x";
+    }
+
+    std::string CHIP8Disassembler::labelPrefix(const std::string& label, const std::string& mnemonic) const {
+        if (m_syntax == Syntax::Chipper) {
+            return mnemonic.empty() ? fmt::format("{}:", label) : fmt::format("{}: {}", label, mnemonic);
+        }
+
+        return mnemonic.empty() ? fmt::format(": {}", label) : fmt::format(": {} {}", label, mnemonic);
+    }
+
     std::optional<Instruction> CHIP8Disassembler::disassemble(u64 imageBaseAddress, u64 instructionLoadAddress, u64 instructionDataAddress, std::span<const u8> code) {
         if (code.empty()) return std::nullopt;
 
@@ -211,7 +223,7 @@ namespace hex::plugin::chip8 {
 
             auto getTarget = [&](u16 targetAddr) -> std::string {
                 if (m_labels.contains(targetAddr)) return m_labels[targetAddr];
-                return fmt::format("0x{:03X}", targetAddr);
+                return fmt::format("{}{:03X}", hexPrefix(), targetAddr);
             };
 
             const OpcodeDef* def = decodeOpcode(opcode, m_variant);
@@ -235,7 +247,7 @@ namespace hex::plugin::chip8 {
             if (def == nullptr) {
                 inst.mnemonic = "invalid";
                 inst.operators = "";
-            } else if (def->flow == Flow::Jump && nnn == virtualAddress) {
+            } else if (m_syntax == Syntax::Octo && def->flow == Flow::Jump && nnn == virtualAddress) {
                 inst.mnemonic = "loop";
                 inst.operators = "again";
             } else {
@@ -245,11 +257,7 @@ namespace hex::plugin::chip8 {
             }
 
             if (m_labels.contains(virtualAddress)) {
-                if (inst.mnemonic.empty()) {
-                    inst.mnemonic = fmt::format(": {}", m_labels[virtualAddress]);
-                } else {
-                    inst.mnemonic = fmt::format(": {} {}", m_labels[virtualAddress], inst.mnemonic);
-                }
+                inst.mnemonic = labelPrefix(m_labels[virtualAddress], inst.mnemonic);
             }
         } else {
             size_t dataLen = 1;
@@ -264,22 +272,26 @@ namespace hex::plugin::chip8 {
             std::string bytesStr;
             std::string opsStr;
 
+            // Chipper separates data bytes with commas, Octo with spaces
+            const char* opsSeparator = m_syntax == Syntax::Chipper ? "," : " ";
+
             for (size_t i = 0; i < dataLen; ++i) {
                 bytesStr += fmt::format("{:02X}", code[i]);
-                opsStr += fmt::format("0x{:02X}", code[i]);
+                opsStr += fmt::format("{}{:02X}", hexPrefix(), code[i]);
 
                 if (i < dataLen - 1) {
                     bytesStr += " ";
-                    opsStr += " ";
+                    opsStr += opsSeparator;
                 }
             }
 
             inst.bytes = bytesStr;
 
+            std::string dataMnemonic = m_syntax == Syntax::Chipper ? "db" : "";
             if (m_labels.contains(virtualAddress)) {
-                inst.mnemonic = fmt::format(": {}", m_labels[virtualAddress]);
+                inst.mnemonic = labelPrefix(m_labels[virtualAddress], dataMnemonic);
             } else {
-                inst.mnemonic = "";
+                inst.mnemonic = dataMnemonic;
             }
 
             inst.operators = opsStr;
@@ -303,6 +315,21 @@ namespace hex::plugin::chip8 {
                         m_variantIndex = i;
                         m_variant = Variants[m_variantIndex].second;
                     }
+                }
+            }
+            ImGui::EndCombo();
+        }
+
+        constexpr static std::pair<const char*, Syntax> Syntaxes[] = {
+            { "Octo",    Syntax::Octo },
+            { "Chipper", Syntax::Chipper }
+        };
+
+        if (ImGui::BeginCombo("Syntax", Syntaxes[static_cast<int>(m_syntax)].first)) {
+            for (const auto& [name, syntax] : Syntaxes) {
+                bool isSelected = (m_syntax == syntax);
+                if (ImGui::Selectable(name, isSelected)) {
+                    m_syntax = syntax;
                 }
             }
             ImGui::EndCombo();

@@ -55,7 +55,7 @@ namespace hex::plugin::chip8 {
         Flow flow;
         Effect effect;
         OpcodeText octo;
-        OpcodeText chipper = {}; // TODO
+        OpcodeText chipper;
 
         const OpcodeText& text(Syntax syntax) const { return syntax == Syntax::Octo ? octo : chipper; }
     };

@@ -20,6 +20,8 @@ namespace hex::plugin::chip8 {
         m_dataLengths.clear();
         m_dataRows.clear();
         m_codeStarts.clear();
+        m_jumpSources.clear();
+        m_callTargets.clear();
         m_routineSummaries.clear();
         m_activeRoutines.clear();
 
@@ -189,15 +191,21 @@ namespace hex::plugin::chip8 {
                     auto targetOffset = virtualAddressToFileOffset(nnn);
                     if (targetOffset && targetOffset.value() < fileSize) {
                         if (isCall) {
+                            m_callTargets.insert(nnn);
+                        } else {
+                            m_jumpSources[nnn].insert(offset);
+                        }
+
+                        if (isCall) {
                             // there is a single thread, so i after the call is whatever the callee left in it
                             current_i = traceRoutine(targetOffset.value(), current_i);
                         } else {
                             worklist.push({targetOffset.value(), current_i});
                         }
 
-                        // create a label only if it is not a jump-to-self
-                        u16 currentVirtualAddress = offset + 0x200; // loop again
-                        if (nnn != currentVirtualAddress) {
+                        // a jump-to-self only needs no label when it is printed as loop again
+                        u16 currentVirtualAddress = offset + 0x200;
+                        if (nnn != currentVirtualAddress || !(m_guessPreprocessor && m_syntax == Syntax::Octo)) {
                             auto existing = m_labels.find(nnn);
 
                             if (existing == m_labels.end()) {
@@ -317,6 +325,79 @@ namespace hex::plugin::chip8 {
         return m_syntax == Syntax::Chipper ? "#" : "0x";
     }
 
+    std::string CHIP8Disassembler::formatByte(u8 value) const {
+        if (m_decimalBytes) return fmt::format("{}", value);
+
+        return fmt::format("{}{:02X}", hexPrefix(), value);
+    }
+
+    bool CHIP8Disassembler::isLoopHead(u16 virtualAddress) const {
+        auto sources = m_jumpSources.find(virtualAddress);
+        if (sources == m_jumpSources.end() || sources->second.size() != 1 || m_callTargets.contains(virtualAddress))
+            return false;
+
+        // Octo closes a loop with a single again, and only a jump from further down does that
+        return *sources->second.begin() + 0x200 > virtualAddress;
+    }
+
+    // Octo compiles a comparison to vF := left, vF -= right (or vF =- right) and a skip on the borrow flag in vF
+    // Example of such comparison
+    // original:
+    // if v1 < 64 then again
+    //
+    // disassembled:
+    // vF := 64
+    // vF =- v1
+    // if vF == 0 then
+    // jump label_3B3
+    //
+    std::string CHIP8Disassembler::guessComparison(u64 dataAddress, std::span<const u8> code) const {
+        if (code.size() < 6) return "";
+
+        // the three instructions have to be traced code and nothing may jump into the middle of them
+        for (u64 i = 0; i < 6; i++) {
+            auto type = m_addressTypes.find(dataAddress + i);
+            if (type == m_addressTypes.end() || type->second != AddressType::Code) return "";
+        }
+        if (!m_codeStarts.contains(dataAddress + 2) || !m_codeStarts.contains(dataAddress + 4)) return "";
+        if (m_labels.contains(dataAddress + 2 + 0x200) || m_labels.contains(dataAddress + 4 + 0x200)) return "";
+
+        const u16 load   = (code[0] << 8) | code[1];
+        const u16 sub    = (code[2] << 8) | code[3];
+        const u16 skip   = (code[4] << 8) | code[5];
+
+        const bool loadsConstant = (load & 0xFF00) == 0x6F00; // vF := NN
+        const bool loadsRegister = (load & 0xFF0F) == 0x8F00; // vF := vY
+        const bool subtracts     = (sub & 0xFF0F) == 0x8F05;  // vF -= vX, flag is set when vF >= vX
+        const bool subtractsFrom = (sub & 0xFF0F) == 0x8F07;  // vF =- vX, flag is set when vX >= vF
+
+        if (!(loadsConstant || loadsRegister) || !(subtracts || subtractsFrom)) return "";
+        if (skip != 0x3F00 && skip != 0x4F00) return "";
+
+        const u8 right = (sub & 0x00F0) >> 4;
+        if (right == 0xF) return "";
+
+        // 3F00 runs the next instruction while vF is not zero, 4F00 while it is zero
+        const bool flagSet = skip == 0x3F00;
+
+        if (loadsConstant) {
+            const std::string constant = formatByte(load & 0x00FF);
+
+            if (subtracts)
+                return fmt::format("v{:X} {} {} then", right, flagSet ? "<=" : ">", constant);
+
+            return fmt::format("v{:X} {} {} then", right, flagSet ? ">=" : "<", constant);
+        }
+
+        const u8 left = (load & 0x00F0) >> 4;
+        if (left == 0xF) return "";
+
+        if (subtracts)
+            return fmt::format("v{:X} {} v{:X} then", left, flagSet ? ">=" : "<", right);
+
+        return fmt::format("v{:X} {} v{:X} then", left, flagSet ? "<=" : ">", right);
+    }
+
     // ImHex drops lines with an empty mnemonic when exporting, so Octo statements move their first token there
     static void moveFirstTokenToMnemonic(std::string& mnemonic, std::string& operators) {
         if (!mnemonic.empty()) return;
@@ -362,6 +443,14 @@ namespace hex::plugin::chip8 {
                 def = nullptr;
             }
 
+            const bool guessOcto = m_guessPreprocessor && m_syntax == Syntax::Octo;
+
+            std::string comparison;
+            if (guessOcto) {
+                comparison = guessComparison(instructionDataAddress, code);
+                if (!comparison.empty()) size = 6;
+            }
+
             inst.size = size;
             inst.bytes = "";
             for (size_t i = 0; i < size; ++i) {
@@ -371,22 +460,40 @@ namespace hex::plugin::chip8 {
 
             u16 immediate = size == 4 ? u16((code[2] << 8) | code[3]) : 0;
 
-            if (def == nullptr) {
+            auto byteFormatter = [this](u8 value) { return formatByte(value); };
+
+            if (!comparison.empty()) {
+                inst.mnemonic = "if";
+                inst.operators = comparison;
+            } else if (def == nullptr) {
                 inst.mnemonic = "invalid";
                 inst.operators = "";
-            } else if (m_syntax == Syntax::Octo && def->flow == Flow::Jump && nnn == virtualAddress) {
+            } else if (guessOcto && def->flow == Flow::Jump && nnn == virtualAddress) {
                 inst.mnemonic = "loop";
                 inst.operators = "again";
+            } else if (guessOcto && def->flow == Flow::Jump && isLoopHead(nnn)) {
+                inst.mnemonic = "again";
+                inst.operators = "";
             } else {
                 const OpcodeText& text = def->text(m_syntax);
                 inst.mnemonic = text.mnemonic;
-                inst.operators = formatOperands(text.operands, opcode, getTarget, immediate);
+                inst.operators = formatOperands(text.operands, opcode, getTarget, byteFormatter, immediate);
+
+                // Octo compiles vX -= NN to an addition of the two's complement, so big constants are most likely negative
+                const OpcodeFields fields = splitOpcode(opcode);
+                if (guessOcto && def->pattern == 0x7000 && fields.nn >= 0xC0) {
+                    inst.operators = fmt::format("v{:X} -= {}", fields.x, formatByte(u8(256 - fields.nn)));
+                }
             }
 
             moveFirstTokenToMnemonic(inst.mnemonic, inst.operators);
 
             if (m_labels.contains(virtualAddress)) {
-                inst.mnemonic = labelPrefix(m_labels[virtualAddress], inst.mnemonic);
+                if (guessOcto && isLoopHead(virtualAddress)) {
+                    inst.mnemonic = fmt::format("loop {}", inst.mnemonic);
+                } else {
+                    inst.mnemonic = labelPrefix(m_labels[virtualAddress], inst.mnemonic);
+                }
             }
         } else {
             size_t dataLen = 1;
@@ -406,7 +513,7 @@ namespace hex::plugin::chip8 {
 
             for (size_t i = 0; i < dataLen; ++i) {
                 bytesStr += fmt::format("{:02X}", code[i]);
-                opsStr += fmt::format("{}{:02X}", hexPrefix(), code[i]);
+                opsStr += formatByte(code[i]);
 
                 if (i < dataLen - 1) {
                     bytesStr += " ";
@@ -465,6 +572,14 @@ namespace hex::plugin::chip8 {
             }
             ImGui::EndCombo();
         }
+
+        ImGui::Checkbox("Print bytes as decimal", &m_decimalBytes);
+
+        ImGui::BeginDisabled(m_syntax != Syntax::Octo);
+        ImGui::Checkbox("Guess preprocessor instructions", &m_guessPreprocessor);
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("Octo only: recognizes comparisons, negative constants and loop / again");
     }
 
     std::string CHIP8Disassembler::getFormattedPatternLanguageType(u64 /*imageBaseAddress*/, u64 /*instructionLoadAddress*/) {

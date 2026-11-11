@@ -70,14 +70,14 @@ namespace hex::plugin::chip8 {
 
             { 0x1000, 0xF000, All,                  2, Jump,         None, { "jump", "{addr}" },                          { "jp", "{addr}" } }, // jump to NNN
             { 0x2000, 0xF000, All,                  2, Call,         None, { ":call", "{addr}" },                         { "call", "{addr}" } }, // call NNN
-            { 0x3000, 0xF000, All,                  2, Skip,         None, { "", "if v{x} != 0x{nn} then" },              { "se", "v{x},#{nn}" } }, // skip if vX == NN
-            { 0x4000, 0xF000, All,                  2, Skip,         None, { "", "if v{x} == 0x{nn} then" },              { "sne", "v{x},#{nn}" } }, // skip if vX != NN
-            { 0x6000, 0xF000, All,                  2, Next,         None, { "", "v{x} := 0x{nn}" },                     { "ld", "v{x},#{nn}" } },
-            { 0x7000, 0xF000, All,                  2, Next,         None, { "", "v{x} += 0x{nn}" },                     { "add", "v{x},#{nn}" } },
+            { 0x3000, 0xF000, All,                  2, Skip,         None, { "", "if v{x} != {nn} then" },              { "se", "v{x},{nn}" } }, // skip if vX == NN
+            { 0x4000, 0xF000, All,                  2, Skip,         None, { "", "if v{x} == {nn} then" },              { "sne", "v{x},{nn}" } }, // skip if vX != NN
+            { 0x6000, 0xF000, All,                  2, Next,         None, { "", "v{x} := {nn}" },                     { "ld", "v{x},{nn}" } },
+            { 0x7000, 0xF000, All,                  2, Next,         None, { "", "v{x} += {nn}" },                     { "add", "v{x},{nn}" } },
             { 0xA000, 0xF000, All,                  2, Next,         SetI, { "", "i := {addr}" },                        { "ld", "i,{addr}" } }, // i := NNN
             { 0xB000, 0xF000, Chip8 | XOChip,       2, IndirectJump, None, { "jump0", "{addr}" },                         { "jp", "v0,{addr}" } }, // jump to NNN + v0
             { 0xB000, 0xF000, SuperChip,            2, IndirectJump, None, { "jump0", "{addr} v{x}" },                   { "jp", "v{x},{addr}" } }, // jump to XNN + vX
-            { 0xC000, 0xF000, All,                  2, Next,         None, { "", "v{x} := random 0x{nn}" },              { "rnd", "v{x},#{nn}" } },
+            { 0xC000, 0xF000, All,                  2, Next,         None, { "", "v{x} := random {nn}" },              { "rnd", "v{x},{nn}" } },
             { 0xD000, 0xF000, All,                  2, Next,   DrawSprite, { "sprite", "v{x} v{y} {n}" },                { "drw", "v{x},v{y},{n}" } }, // Dxyn, sprite vX vY N
         };
 
@@ -102,7 +102,7 @@ namespace hex::plugin::chip8 {
         return nullptr;
     }
 
-    std::string formatOperands(const char* operandTemplate, u16 opcode, const std::function<std::string(u16)>& resolveAddress, u16 immediate) {
+    std::string formatOperands(const char* operandTemplate, u16 opcode, const std::function<std::string(u16)>& resolveAddress, const std::function<std::string(u8)>& formatByte, u16 immediate) {
         const OpcodeFields fields = splitOpcode(opcode);
 
         std::string result;
@@ -118,7 +118,7 @@ namespace hex::plugin::chip8 {
             else if (key == "y")    result += fmt::format("{:X}", fields.y);
             else if (key == "xd")   result += fmt::format("{}", fields.x);
             else if (key == "n")    result += fmt::format("{}", fields.n);
-            else if (key == "nn")   result += fmt::format("{:02X}", fields.nn);
+            else if (key == "nn")   result += formatByte(fields.nn);
             else if (key == "addr") result += resolveAddress(fields.nnn);
             else if (key == "nnnn") result += resolveAddress(immediate);
             else {

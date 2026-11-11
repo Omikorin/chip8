@@ -43,6 +43,9 @@ namespace hex::plugin::chip8 {
 
         std::set<u64> m_codeStarts;
 
+        std::map<u16, std::set<u64>> m_jumpSources; // file offsets of the jumps to a virtual address
+        std::set<u16> m_callTargets;
+
         using RoutineKey = std::pair<u64, std::optional<u16>>; // file offset and i on entry, nullopt if unknown
         std::map<RoutineKey, std::optional<u16>> m_routineSummaries; // i on return
         std::set<RoutineKey> m_activeRoutines;
@@ -50,11 +53,16 @@ namespace hex::plugin::chip8 {
         int m_variantIndex = 0;
         ChipVariant m_variant = ChipVariant::Chip8;
         Syntax m_syntax = Syntax::Octo;
+        bool m_decimalBytes = false;
+        bool m_guessPreprocessor = false;
 
         void analyzeControlFlow();
         void groupData(u64 fileSize);
         std::optional<u16> traceRoutine(u64 entryFileOffset, std::optional<u16> entryI);
         const char* hexPrefix() const;
+        std::string formatByte(u8 value) const;
+        bool isLoopHead(u16 virtualAddress) const;
+        std::string guessComparison(u64 dataAddress, std::span<const u8> code) const;
         std::string labelPrefix(const std::string& label, const std::string& mnemonic) const;
     };
 }

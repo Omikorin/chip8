@@ -41,7 +41,7 @@ namespace hex::plugin::chip8 {
         LoadAudio      // 16 bytes audio pattern at i
     };
 
-    // operands is a template: {x} {y} register digit, {xd} X in decimal, {n} decimal, {nn} two hex digits,
+    // operands is a template: {x} {y} register digit, {xd} X in decimal, {n} decimal, {nn} byte constant,
     // {addr} label or address of NNN, {nnnn} label or address of the word following a 4-byte opcode
     struct OpcodeText {
         const char *mnemonic = "";
@@ -79,5 +79,5 @@ namespace hex::plugin::chip8 {
     // returns nullptr for opcodes that are not valid in the given variant
     const OpcodeDef* decodeOpcode(u16 opcode, ChipVariant variant);
 
-    std::string formatOperands(const char* operandTemplate, u16 opcode, const std::function<std::string(u16)>& resolveAddress, u16 immediate = 0);
+    std::string formatOperands(const char* operandTemplate, u16 opcode, const std::function<std::string(u16)>& resolveAddress, const std::function<std::string(u8)>& formatByte, u16 immediate = 0);
 }

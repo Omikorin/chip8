@@ -16,7 +16,8 @@ namespace hex::plugin::chip8 {
         Unknown,
         Code,
         Data,
-        Sprite
+        Sprite,
+        Audio
     };
 
     class CHIP8Disassembler : public Architecture {

@@ -59,15 +59,27 @@ namespace hex::plugin::chip8 {
             provider->read(offset, bytes, 2);
             u16 opcode = (bytes[0] << 8) | bytes[1];
 
-            m_addressTypes[offset] = AddressType::Code;
-            m_addressTypes[offset + 1] = AddressType::Code;
-
             const OpcodeDef* def = decodeOpcode(opcode, m_variant);
+            const u8 size = def != nullptr ? def->size : 2;
+            if (offset + size > fileSize) continue;
+
+            // second word of 4-byte instructions such as F000 NNNN
+            u16 immediate = 0;
+            if (size == 4) {
+                u8 extra[2] = {0};
+                provider->read(offset + 2, extra, 2);
+                immediate = (extra[0] << 8) | extra[1];
+            }
+
+            for (u8 i = 0; i < size; i++) {
+                m_addressTypes[offset + i] = AddressType::Code;
+            }
+
             const OpcodeFields fields = splitOpcode(opcode);
             u16 nnn = fields.nnn;
             u8 n = fields.n; // for Dxyn
 
-            bool fallsThrough = true; // does execution continue to pc + 2?
+            bool fallsThrough = true; // does execution continue with the next instruction?
 
             auto virtualAddressToFileOffset = [](u16 virtAddr) -> std::optional<u64> {
                 if (virtAddr >= 0x200) return virtAddr - 0x200;
@@ -99,12 +111,19 @@ namespace hex::plugin::chip8 {
                     // calls eventually return (00EE), so the instruction after the call is executed later
                     break;
                 }
-                case Flow::Skip: // skip if vX == NN, vX != NN, vX == vY, vX != vY
-                    if (offset + 3 < fileSize) {
-                        // execution can branch to pc + 4 if the condition is met
-                        worklist.push({offset + 4, current_i});
+                case Flow::Skip: { // skip if vX == NN, vX != NN, vX == vY, vX != vY
+                    u64 nextOffset = offset + size;
+                    if (nextOffset + 1 < fileSize) {
+                        // the skipped instruction can be 4 bytes long (F000 NNNN)
+                        u8 nextBytes[2] = {0};
+                        provider->read(nextOffset, nextBytes, 2);
+                        const OpcodeDef* nextDef = decodeOpcode((nextBytes[0] << 8) | nextBytes[1], m_variant);
+
+                        // execution can branch past the next instruction if the condition is met
+                        worklist.push({nextOffset + (nextDef != nullptr ? nextDef->size : 2), current_i});
                     }
                     break;
+                }
                 case Flow::IndirectJump: // jump to NNN + v0
                     // jump to XNN + vX for SUPER-CHIP
                     // v0 is dynamic, so we stop tracing this specific branch
@@ -117,6 +136,9 @@ namespace hex::plugin::chip8 {
             switch (def != nullptr ? def->effect : Effect::None) {
                 case Effect::SetI: // i := NNN
                     current_i = nnn;
+                    break;
+                case Effect::SetILong: // i := long NNNN
+                    current_i = immediate;
                     break;
                 case Effect::DrawSprite: // sprite vX vY N
                 case Effect::DrawBigSprite: // sprite vX vY 0 for SUPER-CHIP and later: 16x16 pixels = 32 bytes
@@ -141,13 +163,32 @@ namespace hex::plugin::chip8 {
                         }
                     }
                     break;
+                case Effect::LoadAudio: // audio, 16 bytes audio pattern at i
+                    if (current_i >= 0x200) {
+                        m_labels[current_i] = fmt::format("sound_{:03X}", current_i);
+
+                        auto audioOffset = virtualAddressToFileOffset(current_i);
+                        if (audioOffset) {
+                            u64 offsetVal = audioOffset.value();
+
+                            constexpr size_t audioPatternBytes = 16;
+                            m_dataLengths[offsetVal] = std::max<size_t>(m_dataLengths[offsetVal], audioPatternBytes);
+
+                            for (size_t idx = 0; idx < audioPatternBytes; idx++) {
+                                if (offsetVal + idx < fileSize) {
+                                    m_addressTypes[offsetVal + idx] = AddressType::Audio;
+                                }
+                            }
+                        }
+                    }
+                    break;
                 case Effect::None:
                     break;
             }
 
             // add the next instruction to the queue if the flow allows it
-            if (fallsThrough && offset + 3 < fileSize) {
-                worklist.push({offset + 2, current_i});
+            if (fallsThrough && offset + size + 1 < fileSize) {
+                worklist.push({offset + size, current_i});
             }
         }
     }
@@ -165,9 +206,6 @@ namespace hex::plugin::chip8 {
         auto type = m_addressTypes.contains(instructionDataAddress) ? m_addressTypes[instructionDataAddress] : AddressType::Unknown;
 
         if (type == AddressType::Code && code.size() >= 2) {
-            inst.size = 2;
-            inst.bytes = fmt::format("{:02X} {:02X}", code[0], code[1]);
-
             u16 opcode = (code[0] << 8) | code[1];
             u16 nnn = opcode & 0x0FFF;
 
@@ -177,6 +215,22 @@ namespace hex::plugin::chip8 {
             };
 
             const OpcodeDef* def = decodeOpcode(opcode, m_variant);
+            size_t size = def != nullptr ? def->size : 2;
+
+            // a truncated 4-byte instruction at the end of the file is invalid
+            if (size > code.size()) {
+                size = 2;
+                def = nullptr;
+            }
+
+            inst.size = size;
+            inst.bytes = "";
+            for (size_t i = 0; i < size; ++i) {
+                if (i > 0) inst.bytes += ' ';
+                inst.bytes += fmt::format("{:02X}", code[i]);
+            }
+
+            u16 immediate = size == 4 ? u16((code[2] << 8) | code[3]) : 0;
 
             if (def == nullptr) {
                 inst.mnemonic = "invalid";
@@ -187,7 +241,7 @@ namespace hex::plugin::chip8 {
             } else {
                 const OpcodeText& text = def->text(m_syntax);
                 inst.mnemonic = text.mnemonic;
-                inst.operators = formatOperands(text.operands, opcode, getTarget);
+                inst.operators = formatOperands(text.operands, opcode, getTarget, immediate);
             }
 
             if (m_labels.contains(virtualAddress)) {

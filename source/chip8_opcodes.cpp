@@ -30,11 +30,15 @@ namespace hex::plugin::chip8 {
             { 0x00FD, 0xFFFF, SuperChip | XOChip,   2, Halt,         None, { "exit", "" } }, // exit interpreter
             { 0x00FE, 0xFFFF, SuperChip | XOChip,   2, Next,         None, { "lores", "" } },
             { 0x00FF, 0xFFFF, SuperChip | XOChip,   2, Next,         None, { "hires", "" } },
+            { 0xF000, 0xFFFF, XOChip,               4, Next,     SetILong, { "", "i := long {nnnn}" } }, // i := long NNNN
+            { 0xF002, 0xFFFF, XOChip,               2, Next,    LoadAudio, { "audio", "" } }, // load 16 bytes audio pattern at i
 
             { 0x00C0, 0xFFF0, SuperChip | XOChip,   2, Next,         None, { "scroll-down", "{n}" } },
+            { 0x00D0, 0xFFF0, XOChip,               2, Next,         None, { "scroll-up", "{n}" } },
 
             { 0xE09E, 0xF0FF, All,                  2, Skip,         None, { "", "if v{x} -key then" } },
             { 0xE0A1, 0xF0FF, All,                  2, Skip,         None, { "", "if v{x} key then" } },
+            { 0xF001, 0xF0FF, XOChip,               2, Next,         None, { "plane", "{xd}" } }, // select bit planes to draw on
             { 0xF007, 0xF0FF, All,                  2, Next,         None, { "", "v{x} := delay" } },
             { 0xF00A, 0xF0FF, All,                  2, Next,         None, { "", "v{x} := key" } },
             { 0xF015, 0xF0FF, All,                  2, Next,         None, { "", "delay := v{x}" } },
@@ -43,12 +47,15 @@ namespace hex::plugin::chip8 {
             { 0xF029, 0xF0FF, All,                  2, Next,         None, { "", "i := hex v{x}" } },
             { 0xF030, 0xF0FF, SuperChip | XOChip,   2, Next,         None, { "", "i := bighex v{x}" } },
             { 0xF033, 0xF0FF, All,                  2, Next,         None, { "bcd", "v{x}" } },
+            { 0xF03A, 0xF0FF, XOChip,               2, Next,         None, { "", "pitch := v{x}" } },
             { 0xF055, 0xF0FF, All,                  2, Next,         None, { "save", "v{x}" } },
             { 0xF065, 0xF0FF, All,                  2, Next,         None, { "load", "v{x}" } },
             { 0xF075, 0xF0FF, SuperChip | XOChip,   2, Next,         None, { "saveflags", "v{x}" } },
             { 0xF085, 0xF0FF, SuperChip | XOChip,   2, Next,         None, { "loadflags", "v{x}" } },
 
             { 0x5000, 0xF00F, All,                  2, Skip,         None, { "", "if v{x} != v{y} then" } }, // skip if vX == vY
+            { 0x5002, 0xF00F, XOChip,               2, Next,         None, { "save", "v{x} - v{y}" } }, // write registers vX to vY at i
+            { 0x5003, 0xF00F, XOChip,               2, Next,         None, { "load", "v{x} - v{y}" } }, // read registers vX to vY from i
             { 0x8000, 0xF00F, All,                  2, Next,         None, { "", "v{x} := v{y}" } },
             { 0x8001, 0xF00F, All,                  2, Next,         None, { "", "v{x} |= v{y}" } },
             { 0x8002, 0xF00F, All,                  2, Next,         None, { "", "v{x} &= v{y}" } },
@@ -95,7 +102,7 @@ namespace hex::plugin::chip8 {
         return nullptr;
     }
 
-    std::string formatOperands(const char* operandTemplate, u16 opcode, const std::function<std::string(u16)>& resolveAddress) {
+    std::string formatOperands(const char* operandTemplate, u16 opcode, const std::function<std::string(u16)>& resolveAddress, u16 immediate) {
         const OpcodeFields fields = splitOpcode(opcode);
 
         std::string result;
@@ -109,9 +116,11 @@ namespace hex::plugin::chip8 {
             const std::string_view key(p + 1, end - (p + 1));
             if (key == "x")         result += fmt::format("{:X}", fields.x);
             else if (key == "y")    result += fmt::format("{:X}", fields.y);
+            else if (key == "xd")   result += fmt::format("{}", fields.x);
             else if (key == "n")    result += fmt::format("{}", fields.n);
             else if (key == "nn")   result += fmt::format("{:02X}", fields.nn);
             else if (key == "addr") result += resolveAddress(fields.nnn);
+            else if (key == "nnnn") result += resolveAddress(immediate);
             else {
                 result += *p;
                 continue;

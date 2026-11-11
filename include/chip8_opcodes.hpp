@@ -34,11 +34,14 @@ namespace hex::plugin::chip8 {
     enum class Effect : u8 {
         None,
         SetI,          // i := NNN
+        SetILong,      // i := the 16 bit word following the opcode
         DrawSprite,    // N bytes at i
-        DrawBigSprite  // 16x16 pixels (32 bytes) at i
+        DrawBigSprite, // 16x16 pixels (32 bytes) at i
+        LoadAudio      // 16 bytes audio pattern at i
     };
 
-    // operands is a template: {x} {y} register digit, {n} decimal, {nn} two hex digits, {addr} label or address of NNN
+    // operands is a template: {x} {y} register digit, {xd} X in decimal, {n} decimal, {nn} two hex digits,
+    // {addr} label or address of NNN, {nnnn} label or address of the word following a 4-byte opcode
     struct OpcodeText {
         const char *mnemonic = "";
         const char *operands = "";
@@ -75,5 +78,5 @@ namespace hex::plugin::chip8 {
     // returns nullptr for opcodes that are not valid in the given variant
     const OpcodeDef* decodeOpcode(u16 opcode, ChipVariant variant);
 
-    std::string formatOperands(const char* operandTemplate, u16 opcode, const std::function<std::string(u16)>& resolveAddress);
+    std::string formatOperands(const char* operandTemplate, u16 opcode, const std::function<std::string(u16)>& resolveAddress, u16 immediate = 0);
 }

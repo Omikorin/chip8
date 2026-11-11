@@ -18,6 +18,7 @@ namespace hex::plugin::chip8 {
         m_addressTypes.clear();
         m_labels.clear();
         m_dataLengths.clear();
+        m_dataRows.clear();
         m_codeStarts.clear();
         m_routineSummaries.clear();
         m_activeRoutines.clear();
@@ -36,6 +37,48 @@ namespace hex::plugin::chip8 {
         m_labels[0x200] = "main";
 
         traceRoutine(0x0, std::nullopt);
+        groupData(provider->getActualSize());
+    }
+
+    void CHIP8Disassembler::groupData(u64 fileSize) {
+        // typical sprite height, used when no drawn sprite gives a hint
+        constexpr size_t DefaultRowBytes = 8;
+
+        auto isBoundary = [&](u64 offset) {
+            auto type = m_addressTypes.find(offset);
+            return (type != m_addressTypes.end() && type->second == AddressType::Code) ||
+                   m_labels.contains(offset + 0x200) ||
+                   m_dataLengths.contains(offset);
+        };
+
+        // bytes that follow a labelled block and belong to no label are grouped like that block, e.g. the second plane of a sprite
+        size_t rowBytes = DefaultRowBytes;
+
+        u64 offset = 0;
+        while (offset < fileSize) {
+            auto type = m_addressTypes.find(offset);
+            if (type != m_addressTypes.end() && type->second == AddressType::Code) {
+                offset += 1;
+                continue;
+            }
+
+            size_t length = rowBytes;
+            if (auto known = m_dataLengths.find(offset); known != m_dataLengths.end()) {
+                length = rowBytes = std::max<size_t>(1, known->second);
+            } else if (m_labels.contains(offset + 0x200)) {
+                length = rowBytes = DefaultRowBytes;
+            }
+
+            for (size_t i = 1; i < length; i++) {
+                if (offset + i >= fileSize || isBoundary(offset + i)) {
+                    length = i;
+                    break;
+                }
+            }
+
+            m_dataRows[offset] = length;
+            offset += length;
+        }
     }
 
     std::optional<u16> CHIP8Disassembler::traceRoutine(u64 entryFileOffset, std::optional<u16> entryI) {
@@ -347,8 +390,8 @@ namespace hex::plugin::chip8 {
             }
         } else {
             size_t dataLen = 1;
-            if (m_dataLengths.contains(instructionDataAddress)) {
-                dataLen = m_dataLengths[instructionDataAddress];
+            if (m_dataRows.contains(instructionDataAddress)) {
+                dataLen = m_dataRows[instructionDataAddress];
             }
 
             dataLen = std::max<size_t>(1, std::min<size_t>(dataLen, code.size()));
@@ -358,8 +401,8 @@ namespace hex::plugin::chip8 {
             std::string bytesStr;
             std::string opsStr;
 
-            // Chipper separates data bytes with commas, Octo with spaces, but ImHex needs a fake mnemonic
-            const char* opsSeparator = m_syntax == Syntax::Chipper ? "," : " :byte ";
+            // Chipper separates data bytes with commas, Octo with spaces
+            const char* opsSeparator = m_syntax == Syntax::Chipper ? "," : " ";
 
             for (size_t i = 0; i < dataLen; ++i) {
                 bytesStr += fmt::format("{:02X}", code[i]);
@@ -373,10 +416,11 @@ namespace hex::plugin::chip8 {
 
             inst.bytes = bytesStr;
 
+            // a label already starts an Octo data row, but ImHex needs a mnemonic on the others
             std::string dataMnemonic = m_syntax == Syntax::Chipper ? "db" : ":byte";
 
             if (m_labels.contains(virtualAddress)) {
-                inst.mnemonic = labelPrefix(m_labels[virtualAddress], dataMnemonic);
+                inst.mnemonic = labelPrefix(m_labels[virtualAddress], m_syntax == Syntax::Chipper ? dataMnemonic : "");
             } else {
                 inst.mnemonic = dataMnemonic;
             }

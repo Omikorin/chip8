@@ -38,7 +38,8 @@ namespace hex::plugin::chip8 {
     private:
         std::map<u64, AddressType> m_addressTypes;
         std::map<u64, std::string> m_labels;
-        std::map<u64, size_t> m_dataLengths;
+        std::map<u64, size_t> m_dataLengths; // known sizes of drawn sprites and audio patterns
+        std::map<u64, size_t> m_dataRows; // listing rows of all data, filled by groupData()
 
         std::set<u64> m_codeStarts;
 
@@ -51,6 +52,7 @@ namespace hex::plugin::chip8 {
         Syntax m_syntax = Syntax::Octo;
 
         void analyzeControlFlow();
+        void groupData(u64 fileSize);
         std::optional<u16> traceRoutine(u64 entryFileOffset, std::optional<u16> entryI);
         const char* hexPrefix() const;
         std::string labelPrefix(const std::string& label, const std::string& mnemonic) const;

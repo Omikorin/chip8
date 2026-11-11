@@ -250,8 +250,8 @@ namespace hex::plugin::chip8 {
                         case 0x33: inst.mnemonic = "bcd";  inst.operators = fmt::format("v{:X}", x); break;
                         case 0x55: inst.mnemonic = "save"; inst.operators = fmt::format("v{:X}", x); break;
                         case 0x65: inst.mnemonic = "load"; inst.operators = fmt::format("v{:X}", x); break;
-                        case 0x75: if (m_variant == ChipVariant::SuperChip) inst.mnemonic = "saveflags"; inst.operators = fmt::format("v{:X}", x); break;
-                        case 0x85: if (m_variant == ChipVariant::SuperChip) inst.mnemonic = "loadflags"; inst.operators = fmt::format("v{:X}", x); break;
+                        case 0x75: if (m_variant == ChipVariant::SuperChip) { inst.mnemonic = "saveflags"; inst.operators = fmt::format("v{:X}", x); } break;
+                        case 0x85: if (m_variant == ChipVariant::SuperChip) { inst.mnemonic = "loadflags"; inst.operators = fmt::format("v{:X}", x); } break;
                     }
                     break;
             }

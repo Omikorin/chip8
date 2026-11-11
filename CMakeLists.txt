@@ -42,6 +42,7 @@ add_imhex_plugin(
     SOURCES
         source/chip8_plugin.cpp
         source/chip8_disassembler.cpp
+        source/chip8_opcodes.cpp
     INCLUDES
         include
 )

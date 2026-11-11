@@ -1,5 +1,7 @@
 #pragma once
 
+#include "chip8_opcodes.hpp"
+
 #include <hex/api/content_registry/disassemblers.hpp>
 
 using hex::ContentRegistry::Disassemblers::Architecture;
@@ -15,12 +17,6 @@ namespace hex::plugin::chip8 {
         Code,
         Data,
         Sprite
-    };
-
-    enum class ChipVariant {
-        Chip8,
-        SuperChip,
-        XOChip
     };
 
     class CHIP8Disassembler : public Architecture {
@@ -43,6 +39,7 @@ namespace hex::plugin::chip8 {
 
         int m_variantIndex = 0;
         ChipVariant m_variant = ChipVariant::Chip8;
+        Syntax m_syntax = Syntax::Octo;
 
         void analyzeControlFlow(u64 entryAddress);
     };

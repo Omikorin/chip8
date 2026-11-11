@@ -1,4 +1,5 @@
 #include "chip8_disassembler.hpp"
+#include "chip8_opcodes.hpp"
 
 #include <hex/api/imhex_api/provider.hpp>
 #include <hex/providers/provider.hpp>
@@ -61,9 +62,10 @@ namespace hex::plugin::chip8 {
             m_addressTypes[offset] = AddressType::Code;
             m_addressTypes[offset + 1] = AddressType::Code;
 
-            u8 firstNibble = (opcode & 0xF000) >> 12;
-            u16 nnn = opcode & 0x0FFF;
-            u8 n = opcode & 0x000F; // for Dxyn
+            const OpcodeDef* def = decodeOpcode(opcode, m_variant);
+            const OpcodeFields fields = splitOpcode(opcode);
+            u16 nnn = fields.nnn;
+            u8 n = fields.n; // for Dxyn
 
             bool fallsThrough = true; // does execution continue to pc + 2?
 
@@ -72,16 +74,14 @@ namespace hex::plugin::chip8 {
                 return std::nullopt; // addresses below 0x200 point to the interpreter
             };
 
-            switch (firstNibble) {
-                case 0x0:
-                    if (opcode == 0x00EE) { // return from subroutine
-                        fallsThrough = false;
-                    } else if (m_variant == ChipVariant::SuperChip && opcode == 0x00FD) { // exit interpreter
-                        fallsThrough = false;
-                    }
+            // unknown opcodes are treated as plain instructions
+            switch (def != nullptr ? def->flow : Flow::Next) {
+                case Flow::Return: // return from subroutine
+                case Flow::Halt: // exit interpreter
+                    fallsThrough = false;
                     break;
-                case 0x1: // jump to NNN
-                case 0x2: { // call NNN
+                case Flow::Jump: // jump to NNN
+                case Flow::Call: { // call NNN
                     auto targetOffset = virtualAddressToFileOffset(nnn);
                     if (targetOffset && targetOffset.value() < fileSize) {
                         worklist.push({targetOffset.value(), current_i});
@@ -94,30 +94,32 @@ namespace hex::plugin::chip8 {
                     }
 
                     // a jump discards anything after it
-                    if (firstNibble == 0x1) fallsThrough = false;
+                    if (def->flow == Flow::Jump) fallsThrough = false;
 
                     // calls eventually return (00EE), so the instruction after the call is executed later
                     break;
                 }
-                case 0x3: // skip if vX == NN
-                case 0x4: // skip if vX != NN
-                case 0x5: // skip if vX == vY
-                case 0x9: // skip if vX != vY
-                    // 5xy0 and 9xy0 are only valid with n == 0
-                    if ((firstNibble == 0x3 || firstNibble == 0x4 || n == 0) && offset + 3 < fileSize) {
+                case Flow::Skip: // skip if vX == NN, vX != NN, vX == vY, vX != vY
+                    if (offset + 3 < fileSize) {
                         // execution can branch to pc + 4 if the condition is met
                         worklist.push({offset + 4, current_i});
                     }
                     break;
-                case 0xA: // i := NNN
-                    current_i = nnn;
-                    break;
-                case 0xB: // jump to NNN + v0
+                case Flow::IndirectJump: // jump to NNN + v0
                     // jump to XNN + vX for SUPER-CHIP
                     // v0 is dynamic, so we stop tracing this specific branch
                     fallsThrough = false;
                     break;
-                case 0xD: // sprite vX vY N
+                case Flow::Next:
+                    break;
+            }
+
+            switch (def != nullptr ? def->effect : Effect::None) {
+                case Effect::SetI: // i := NNN
+                    current_i = nnn;
+                    break;
+                case Effect::DrawSprite: // sprite vX vY N
+                case Effect::DrawBigSprite: // sprite vX vY 0 for SUPER-CHIP and later: 16x16 pixels = 32 bytes
                     if (current_i >= 0x200) {
                         // label using the virtual address
                         m_labels[current_i] = fmt::format("sprite_{:03X}", current_i);
@@ -126,8 +128,7 @@ namespace hex::plugin::chip8 {
                         if (spriteOffset) {
                             u64 offsetVal = spriteOffset.value();
 
-                            // sprite vX vY 0 additionally for SUPER-CHIP and later: 16x16 pixels = 32 bytes
-                            size_t spriteBytes = (m_variant == ChipVariant::SuperChip && n == 0) ? 32 : n; // Dxy0
+                            size_t spriteBytes = (def->effect == Effect::DrawBigSprite) ? 32 : n;
 
                             // use max() in case different instructions draw the same sprite with different heights
                             m_dataLengths[offsetVal] = std::max<size_t>(m_dataLengths[offsetVal], spriteBytes);
@@ -139,6 +140,8 @@ namespace hex::plugin::chip8 {
                             }
                         }
                     }
+                    break;
+                case Effect::None:
                     break;
             }
 
@@ -166,98 +169,25 @@ namespace hex::plugin::chip8 {
             inst.bytes = fmt::format("{:02X} {:02X}", code[0], code[1]);
 
             u16 opcode = (code[0] << 8) | code[1];
-            u8 firstNibble = (opcode & 0xF000) >> 12;
-            u8 x  = (opcode & 0x0F00) >> 8;
-            u8 y  = (opcode & 0x00F0) >> 4;
-            u8 n  = (opcode & 0x000F);
-            u8 nn = (opcode & 0x00FF);
-            u16 nnn = (opcode & 0x0FFF);
+            u16 nnn = opcode & 0x0FFF;
 
             auto getTarget = [&](u16 targetAddr) -> std::string {
                 if (m_labels.contains(targetAddr)) return m_labels[targetAddr];
                 return fmt::format("0x{:03X}", targetAddr);
             };
 
-            inst.mnemonic = "";
+            const OpcodeDef* def = decodeOpcode(opcode, m_variant);
 
-            switch (firstNibble) {
-                case 0x0:
-                    if (opcode == 0x00E0)      { inst.mnemonic = "clear"; inst.operators = ""; }
-                    else if (opcode == 0x00EE) { inst.mnemonic = "return"; inst.operators = ""; }
-                    else if (m_variant == ChipVariant::SuperChip && ((opcode & 0xFFF0) == 0x00C0)) { inst.mnemonic = "scroll-down"; inst.operators = fmt::format("{}", n); }
-                    else if (m_variant == ChipVariant::SuperChip && opcode == 0x00FB) { inst.mnemonic = "scroll-right"; inst.operators = ""; }
-                    else if (m_variant == ChipVariant::SuperChip && opcode == 0x00FC) { inst.mnemonic = "scroll-left"; inst.operators = ""; }
-                    else if (m_variant == ChipVariant::SuperChip && opcode == 0x00FD) { inst.mnemonic = "exit"; inst.operators = ""; }
-                    else if (m_variant == ChipVariant::SuperChip && opcode == 0x00FE) { inst.mnemonic = "lores"; inst.operators = ""; }
-                    else if (m_variant == ChipVariant::SuperChip && opcode == 0x00FF) { inst.mnemonic = "hires"; inst.operators = ""; }
-                    else { inst.mnemonic = "invalid"; inst.operators = ""; }
-                    break;
-                case 0x1:
-                    if (nnn == virtualAddress) {
-                        inst.mnemonic = "loop";
-                        inst.operators = "again";
-                    } else {
-                        inst.mnemonic = "jump";
-                        inst.operators = getTarget(nnn);
-                    }
-                    break;
-                case 0x2: inst.mnemonic = ":call"; inst.operators = getTarget(nnn); break;
-                case 0x3: inst.operators = fmt::format("if v{:X} != 0x{:02X} then", x, nn); break;
-                case 0x4: inst.operators = fmt::format("if v{:X} == 0x{:02X} then", x, nn); break;
-                case 0x5: if (n == 0) inst.operators = fmt::format("if v{:X} != v{:X} then", x, y); break;
-                case 0x6: inst.operators = fmt::format("v{:X} := 0x{:02X}", x, nn); break;
-                case 0x7: inst.operators = fmt::format("v{:X} += 0x{:02X}", x, nn); break;
-                case 0x8:
-                    switch (n) {
-                        case 0x0: inst.operators = fmt::format("v{:X} := v{:X}", x, y); break;
-                        case 0x1: inst.operators = fmt::format("v{:X} |= v{:X}", x, y); break;
-                        case 0x2: inst.operators = fmt::format("v{:X} &= v{:X}", x, y); break;
-                        case 0x3: inst.operators = fmt::format("v{:X} ^= v{:X}", x, y); break;
-                        case 0x4: inst.operators = fmt::format("v{:X} += v{:X}", x, y); break;
-                        case 0x5: inst.operators = fmt::format("v{:X} -= v{:X}", x, y); break;
-                        case 0x6: inst.operators = fmt::format("v{:X} >>= v{:X}", x, y); break;
-                        case 0x7: inst.operators = fmt::format("v{:X} =- v{:X}", x, y); break;
-                        case 0xE: inst.operators = fmt::format("v{:X} <<= v{:X}", x, y); break;
-                    }
-                    break;
-                case 0x9: if (n == 0) inst.operators = fmt::format("if v{:X} == v{:X} then", x, y); break;
-                case 0xA: inst.operators = fmt::format("i := {}", getTarget(nnn)); break;
-                case 0xB:
-                    if (m_variant == ChipVariant::SuperChip) {
-                        inst.mnemonic = "jump0";
-                        inst.operators = fmt::format("{} v{:X}", getTarget(nnn), x);
-                    } else {
-                        inst.mnemonic = "jump0";
-                        inst.operators = getTarget(nnn);
-                    }
-                    break;
-                case 0xC: inst.operators = fmt::format("v{:X} := random 0x{:02X}", x, nn); break;
-                case 0xD: inst.mnemonic = "sprite"; inst.operators = fmt::format("v{:X} v{:X} {}", x, y, n); break; // Dxyn and Dxy0
-                case 0xE:
-                    if (nn == 0x9E)      inst.operators = fmt::format("if v{:X} -key then", x);
-                    else if (nn == 0xA1) inst.operators = fmt::format("if v{:X} key then", x);
-                    break;
-                case 0xF:
-                    switch (nn) {
-                        case 0x07: inst.operators = fmt::format("v{:X} := delay", x); break;
-                        case 0x0A: inst.operators = fmt::format("v{:X} := key", x); break;
-                        case 0x15: inst.operators = fmt::format("delay := v{:X}", x); break;
-                        case 0x18: inst.operators = fmt::format("buzzer := v{:X}", x); break;
-                        case 0x1E: inst.operators = fmt::format("i += v{:X}", x); break;
-                        case 0x29: inst.operators = fmt::format("i := hex v{:X}", x); break;
-                        case 0x30: if (m_variant == ChipVariant::SuperChip) inst.operators = fmt::format("i := bighex v{:X}", x); break;
-                        case 0x33: inst.mnemonic = "bcd";  inst.operators = fmt::format("v{:X}", x); break;
-                        case 0x55: inst.mnemonic = "save"; inst.operators = fmt::format("v{:X}", x); break;
-                        case 0x65: inst.mnemonic = "load"; inst.operators = fmt::format("v{:X}", x); break;
-                        case 0x75: if (m_variant == ChipVariant::SuperChip) { inst.mnemonic = "saveflags"; inst.operators = fmt::format("v{:X}", x); } break;
-                        case 0x85: if (m_variant == ChipVariant::SuperChip) { inst.mnemonic = "loadflags"; inst.operators = fmt::format("v{:X}", x); } break;
-                    }
-                    break;
-            }
-
-            // Octo-style instructions have no mnemonic, so an empty operand list means nothing matched
-            if (inst.mnemonic.empty() && inst.operators.empty()) {
+            if (def == nullptr) {
                 inst.mnemonic = "invalid";
+                inst.operators = "";
+            } else if (def->flow == Flow::Jump && nnn == virtualAddress) {
+                inst.mnemonic = "loop";
+                inst.operators = "again";
+            } else {
+                const OpcodeText& text = def->text(m_syntax);
+                inst.mnemonic = text.mnemonic;
+                inst.operators = formatOperands(text.operands, opcode, getTarget);
             }
 
             if (m_labels.contains(virtualAddress)) {

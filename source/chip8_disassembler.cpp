@@ -18,6 +18,9 @@ namespace hex::plugin::chip8 {
         m_addressTypes.clear();
         m_labels.clear();
         m_dataLengths.clear();
+        m_codeStarts.clear();
+        m_routineSummaries.clear();
+        m_activeRoutines.clear();
 
         // CHIP-8 virtual machine programs started historically at 0x200 but the file is not offseted
         u64 vmEntrypoint = 0x200;
@@ -34,26 +37,55 @@ namespace hex::plugin::chip8 {
         if (provider == nullptr || !provider->isReadable() || provider->getActualSize() == 0)
             return;
 
+        traceRoutine(startFileOffset, std::nullopt);
+    }
+
+    std::optional<u16> CHIP8Disassembler::traceRoutine(u64 entryFileOffset, std::optional<u16> entryI) {
+        // the original COSMAC VIP interpreter has a 12 level call stack, deeper nesting is not real code
+        constexpr size_t MaxCallDepth = 32;
+
+        // a routine is traced once per value of i it is entered with, as that decides which sprites it draws
+        const auto key = std::make_pair(entryFileOffset, entryI);
+        if (auto summary = m_routineSummaries.find(key); summary != m_routineSummaries.end())
+            return summary->second;
+
+        if (m_activeRoutines.contains(key) || m_activeRoutines.size() >= MaxCallDepth)
+            return std::nullopt;
+        m_activeRoutines.insert(key);
+
+        auto provider = ImHexApi::Provider::get();
+        u64 fileSize = provider->getActualSize();
+
         struct TraceState {
             u64 fileOffset;
-            u16 i_reg;
+            std::optional<u16> i_reg; // nullopt when unknown
         };
 
         std::queue<TraceState> worklist;
-        worklist.push({startFileOffset, 0});
+        worklist.push({entryFileOffset, entryI});
 
-        u64 fileSize = provider->getActualSize();
+        std::set<u64> visited;
+
+        // i at the return instructions, unknown if they disagree or the routine never returns
+        std::optional<u16> returnedI;
+        bool returned = false;
 
         while (!worklist.empty()) {
             TraceState state = worklist.front();
             worklist.pop();
 
             u64 offset = state.fileOffset;
-            u16 current_i = state.i_reg;
+            std::optional<u16> current_i = state.i_reg;
 
-            // prevent infinite loops if we hit already analyzed code
-            if (m_addressTypes.contains(offset)) continue;
+            // prevent infinite loops if we hit already analyzed code of this routine
+            if (visited.contains(offset)) continue;
+
+            // skip data and the middle of instructions, but trace known code again as i may differ
+            auto knownType = m_addressTypes.find(offset);
+            if (knownType != m_addressTypes.end() && !(knownType->second == AddressType::Code && m_codeStarts.contains(offset))) continue;
             if (offset + 1 >= fileSize) continue;
+
+            visited.insert(offset);
 
             u8 bytes[2] = {0};
             provider->read(offset, bytes, 2);
@@ -71,6 +103,7 @@ namespace hex::plugin::chip8 {
                 immediate = (extra[0] << 8) | extra[1];
             }
 
+            m_codeStarts.insert(offset);
             for (u8 i = 0; i < size; i++) {
                 m_addressTypes[offset + i] = AddressType::Code;
             }
@@ -89,6 +122,14 @@ namespace hex::plugin::chip8 {
             // unknown opcodes are treated as plain instructions
             switch (def != nullptr ? def->flow : Flow::Next) {
                 case Flow::Return: // return from subroutine
+                    if (!returned) {
+                        returnedI = current_i;
+                        returned = true;
+                    } else if (returnedI != current_i) {
+                        returnedI = std::nullopt;
+                    }
+                    fallsThrough = false;
+                    break;
                 case Flow::Halt: // exit interpreter
                     fallsThrough = false;
                     break;
@@ -96,13 +137,20 @@ namespace hex::plugin::chip8 {
                 case Flow::Call: { // call NNN
                     auto targetOffset = virtualAddressToFileOffset(nnn);
                     if (targetOffset && targetOffset.value() < fileSize) {
-                        worklist.push({targetOffset.value(), current_i});
+                        if (def->flow == Flow::Call) {
+                            // there is a single thread, so i after the call is whatever the callee left in it
+                            current_i = traceRoutine(targetOffset.value(), current_i);
+                        } else {
+                            worklist.push({targetOffset.value(), current_i});
+                        }
 
                         // create a label only if it is not a jump-to-self
                         u16 currentVirtualAddress = offset + 0x200; // loop again
                         if (nnn != currentVirtualAddress && !m_labels.contains(nnn)) {
                             m_labels[nnn] = fmt::format("label_{:03X}", nnn);
                         }
+                    } else if (def->flow == Flow::Call) {
+                        current_i = std::nullopt; // callee is not traceable
                     }
 
                     // a jump discards anything after it
@@ -133,6 +181,8 @@ namespace hex::plugin::chip8 {
                     break;
             }
 
+            const u16 knownI = current_i.value_or(0); // below 0x200 is the interpreter, so it never labels anything
+
             switch (def != nullptr ? def->effect : Effect::None) {
                 case Effect::SetI: // i := NNN
                     current_i = nnn;
@@ -140,13 +190,16 @@ namespace hex::plugin::chip8 {
                 case Effect::SetILong: // i := long NNNN
                     current_i = immediate;
                     break;
+                case Effect::ClobberI:
+                    current_i = std::nullopt;
+                    break;
                 case Effect::DrawSprite: // sprite vX vY N
                 case Effect::DrawBigSprite: // sprite vX vY 0 for SUPER-CHIP and later: 16x16 pixels = 32 bytes
-                    if (current_i >= 0x200) {
+                    if (knownI >= 0x200) {
                         // label using the virtual address
-                        m_labels[current_i] = fmt::format("sprite_{:03X}", current_i);
+                        m_labels[knownI] = fmt::format("sprite_{:03X}", knownI);
 
-                        auto spriteOffset = virtualAddressToFileOffset(current_i);
+                        auto spriteOffset = virtualAddressToFileOffset(knownI);
                         if (spriteOffset) {
                             u64 offsetVal = spriteOffset.value();
 
@@ -164,10 +217,10 @@ namespace hex::plugin::chip8 {
                     }
                     break;
                 case Effect::LoadAudio: // audio, 16 bytes audio pattern at i
-                    if (current_i >= 0x200) {
-                        m_labels[current_i] = fmt::format("sound_{:03X}", current_i);
+                    if (knownI >= 0x200) {
+                        m_labels[knownI] = fmt::format("sound_{:03X}", knownI);
 
-                        auto audioOffset = virtualAddressToFileOffset(current_i);
+                        auto audioOffset = virtualAddressToFileOffset(knownI);
                         if (audioOffset) {
                             u64 offsetVal = audioOffset.value();
 
@@ -191,6 +244,11 @@ namespace hex::plugin::chip8 {
                 worklist.push({offset + size, current_i});
             }
         }
+
+        m_activeRoutines.erase(key);
+        m_routineSummaries[key] = returnedI;
+
+        return returnedI;
     }
 
     void CHIP8Disassembler::end() {}

@@ -8,6 +8,8 @@ using hex::ContentRegistry::Disassemblers::Architecture;
 using hex::ContentRegistry::Disassemblers::Instruction;
 
 #include <map>
+#include <optional>
+#include <set>
 #include <string>
 
 namespace hex::plugin::chip8 {
@@ -38,11 +40,18 @@ namespace hex::plugin::chip8 {
         std::map<u64, std::string> m_labels;
         std::map<u64, size_t> m_dataLengths;
 
+        std::set<u64> m_codeStarts;
+
+        using RoutineKey = std::pair<u64, std::optional<u16>>; // file offset and i on entry, nullopt if unknown
+        std::map<RoutineKey, std::optional<u16>> m_routineSummaries; // i on return
+        std::set<RoutineKey> m_activeRoutines;
+
         int m_variantIndex = 0;
         ChipVariant m_variant = ChipVariant::Chip8;
         Syntax m_syntax = Syntax::Octo;
 
         void analyzeControlFlow(u64 entryAddress);
+        std::optional<u16> traceRoutine(u64 entryFileOffset, std::optional<u16> entryI);
         const char* hexPrefix() const;
         std::string labelPrefix(const std::string& label, const std::string& mnemonic) const;
     };

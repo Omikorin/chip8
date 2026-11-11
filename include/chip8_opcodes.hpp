@@ -35,6 +35,7 @@ namespace hex::plugin::chip8 {
         None,
         SetI,          // i := NNN
         SetILong,      // i := the 16 bit word following the opcode
+        ClobberI,      // i changes to a value that is not tracked
         DrawSprite,    // N bytes at i
         DrawBigSprite, // 16x16 pixels (32 bytes) at i
         LoadAudio      // 16 bytes audio pattern at i

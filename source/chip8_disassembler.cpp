@@ -257,6 +257,11 @@ namespace hex::plugin::chip8 {
                     break;
             }
 
+            // Octo-style instructions have no mnemonic, so an empty operand list means nothing matched
+            if (inst.mnemonic.empty() && inst.operators.empty()) {
+                inst.mnemonic = "invalid";
+            }
+
             if (m_labels.contains(virtualAddress)) {
                 if (inst.mnemonic.empty()) {
                     inst.mnemonic = fmt::format(": {}", m_labels[virtualAddress]);

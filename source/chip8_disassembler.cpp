@@ -257,6 +257,15 @@ namespace hex::plugin::chip8 {
         return m_syntax == Syntax::Chipper ? "#" : "0x";
     }
 
+    // ImHex drops lines with an empty mnemonic when exporting, so Octo statements move their first token there
+    static void moveFirstTokenToMnemonic(std::string& mnemonic, std::string& operators) {
+        if (!mnemonic.empty()) return;
+
+        const size_t split = operators.find(' ');
+        mnemonic = operators.substr(0, split);
+        operators = split == std::string::npos ? "" : operators.substr(split + 1);
+    }
+
     std::string CHIP8Disassembler::labelPrefix(const std::string& label, const std::string& mnemonic) const {
         if (m_syntax == Syntax::Chipper) {
             return mnemonic.empty() ? fmt::format("{}:", label) : fmt::format("{}: {}", label, mnemonic);
@@ -314,6 +323,8 @@ namespace hex::plugin::chip8 {
                 inst.operators = formatOperands(text.operands, opcode, getTarget, immediate);
             }
 
+            moveFirstTokenToMnemonic(inst.mnemonic, inst.operators);
+
             if (m_labels.contains(virtualAddress)) {
                 inst.mnemonic = labelPrefix(m_labels[virtualAddress], inst.mnemonic);
             }
@@ -330,8 +341,8 @@ namespace hex::plugin::chip8 {
             std::string bytesStr;
             std::string opsStr;
 
-            // Chipper separates data bytes with commas, Octo with spaces
-            const char* opsSeparator = m_syntax == Syntax::Chipper ? "," : " ";
+            // Chipper separates data bytes with commas, Octo with spaces, but ImHex needs a fake mnemonic
+            const char* opsSeparator = m_syntax == Syntax::Chipper ? "," : " :byte ";
 
             for (size_t i = 0; i < dataLen; ++i) {
                 bytesStr += fmt::format("{:02X}", code[i]);
@@ -345,7 +356,8 @@ namespace hex::plugin::chip8 {
 
             inst.bytes = bytesStr;
 
-            std::string dataMnemonic = m_syntax == Syntax::Chipper ? "db" : "";
+            std::string dataMnemonic = m_syntax == Syntax::Chipper ? "db" : ":byte";
+
             if (m_labels.contains(virtualAddress)) {
                 inst.mnemonic = labelPrefix(m_labels[virtualAddress], dataMnemonic);
             } else {

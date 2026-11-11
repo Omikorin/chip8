@@ -318,7 +318,7 @@ namespace hex::plugin::chip8 {
         }
     }
 
-    std::string CHIP8Disassembler::getFormattedPatternLanguageType(u64 imageBaseAddress, u64 instructionLoadAddress) {
+    std::string CHIP8Disassembler::getFormattedPatternLanguageType(u64 /*imageBaseAddress*/, u64 /*instructionLoadAddress*/) {
         return "hex::type::Instruction<\"chip-8\", \"default\", 0x00, 0x00>";
     }
 }

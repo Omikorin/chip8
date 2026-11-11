@@ -50,7 +50,7 @@ namespace hex::plugin::chip8 {
         ChipVariant m_variant = ChipVariant::Chip8;
         Syntax m_syntax = Syntax::Octo;
 
-        void analyzeControlFlow(u64 entryAddress);
+        void analyzeControlFlow();
         std::optional<u16> traceRoutine(u64 entryFileOffset, std::optional<u16> entryI);
         const char* hexPrefix() const;
         std::string labelPrefix(const std::string& label, const std::string& mnemonic) const;

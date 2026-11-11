@@ -22,22 +22,20 @@ namespace hex::plugin::chip8 {
         m_routineSummaries.clear();
         m_activeRoutines.clear();
 
-        // CHIP-8 virtual machine programs started historically at 0x200 but the file is not offseted
-        u64 vmEntrypoint = 0x200;
-        m_labels[vmEntrypoint] = "main";
-
-        u64 fileOffset = 0x0;
-        analyzeControlFlow(fileOffset);
+        analyzeControlFlow();
 
         return true;
     }
 
-    void CHIP8Disassembler::analyzeControlFlow(u64 startFileOffset) {
+    void CHIP8Disassembler::analyzeControlFlow() {
         auto provider = ImHexApi::Provider::get();
         if (provider == nullptr || !provider->isReadable() || provider->getActualSize() == 0)
             return;
 
-        traceRoutine(startFileOffset, std::nullopt);
+        // CHIP-8 virtual machine programs started historically at 0x200 but the file is not offseted
+        m_labels[0x200] = "main";
+
+        traceRoutine(0x0, std::nullopt);
     }
 
     std::optional<u16> CHIP8Disassembler::traceRoutine(u64 entryFileOffset, std::optional<u16> entryI) {
@@ -119,6 +117,14 @@ namespace hex::plugin::chip8 {
                 return std::nullopt; // addresses below 0x200 point to the interpreter
             };
 
+            // keeps existing labels, so sprite_ and sound_ labels set later replace it for drawn data
+            auto labelDataTarget = [&](u16 virtAddr) {
+                auto targetOffset = virtualAddressToFileOffset(virtAddr);
+                if (targetOffset && targetOffset.value() < fileSize && !m_labels.contains(virtAddr)) {
+                    m_labels[virtAddr] = fmt::format("data_{:03X}", virtAddr);
+                }
+            };
+
             // unknown opcodes are treated as plain instructions
             switch (def != nullptr ? def->flow : Flow::Next) {
                 case Flow::Return: // return from subroutine
@@ -135,9 +141,11 @@ namespace hex::plugin::chip8 {
                     break;
                 case Flow::Jump: // jump to NNN
                 case Flow::Call: { // call NNN
+                    const bool isCall = def->flow == Flow::Call;
+
                     auto targetOffset = virtualAddressToFileOffset(nnn);
                     if (targetOffset && targetOffset.value() < fileSize) {
-                        if (def->flow == Flow::Call) {
+                        if (isCall) {
                             // there is a single thread, so i after the call is whatever the callee left in it
                             current_i = traceRoutine(targetOffset.value(), current_i);
                         } else {
@@ -146,10 +154,17 @@ namespace hex::plugin::chip8 {
 
                         // create a label only if it is not a jump-to-self
                         u16 currentVirtualAddress = offset + 0x200; // loop again
-                        if (nnn != currentVirtualAddress && !m_labels.contains(nnn)) {
-                            m_labels[nnn] = fmt::format("label_{:03X}", nnn);
+                        if (nnn != currentVirtualAddress) {
+                            auto existing = m_labels.find(nnn);
+
+                            if (existing == m_labels.end()) {
+                                m_labels[nnn] = fmt::format("{}_{:03X}", isCall ? "sub" : "label", nnn);
+                            } else if (isCall && existing->second.starts_with("label_")) {
+                                // a call target is a subroutine even if something jumped to it first
+                                existing->second = fmt::format("sub_{:03X}", nnn);
+                            }
                         }
-                    } else if (def->flow == Flow::Call) {
+                    } else if (isCall) {
                         current_i = std::nullopt; // callee is not traceable
                     }
 
@@ -186,9 +201,11 @@ namespace hex::plugin::chip8 {
             switch (def != nullptr ? def->effect : Effect::None) {
                 case Effect::SetI: // i := NNN
                     current_i = nnn;
+                    labelDataTarget(nnn);
                     break;
                 case Effect::SetILong: // i := long NNNN
                     current_i = immediate;
+                    labelDataTarget(immediate);
                     break;
                 case Effect::ClobberI:
                     current_i = std::nullopt;

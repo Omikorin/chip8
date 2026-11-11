@@ -126,15 +126,13 @@ namespace hex::plugin::chip8 {
                         if (spriteOffset) {
                             u64 offsetVal = spriteOffset.value();
 
-                            // sprite vX vY 0 additionally for SUPER-CHIP and later
-                            if (m_variant == ChipVariant::SuperChip && n == 0) { // Dxy0
-                                m_dataLengths[offsetVal] = std::max<size_t>(m_dataLengths[offsetVal], 16);
-                            } else {
-                                // use max() in case different instructions draw the same sprite with different heights
-                                m_dataLengths[offsetVal] = std::max<size_t>(m_dataLengths[offsetVal], n);
-                            }
+                            // sprite vX vY 0 additionally for SUPER-CHIP and later: 16x16 pixels = 32 bytes
+                            size_t spriteBytes = (m_variant == ChipVariant::SuperChip && n == 0) ? 32 : n; // Dxy0
 
-                            for (u16 idx = 0; idx < n; idx++) {
+                            // use max() in case different instructions draw the same sprite with different heights
+                            m_dataLengths[offsetVal] = std::max<size_t>(m_dataLengths[offsetVal], spriteBytes);
+
+                            for (size_t idx = 0; idx < spriteBytes; idx++) {
                                 if (offsetVal + idx < fileSize) {
                                     m_addressTypes[offsetVal + idx] = AddressType::Sprite;
                                 }

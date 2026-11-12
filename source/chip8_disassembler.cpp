@@ -641,7 +641,35 @@ namespace hex::plugin::chip8 {
             const bool isWhile = hasJump && m_whileJumps.contains(instructionDataAddress + conditionSize);
             const bool isBegin = hasJump && m_beginJumps.contains(instructionDataAddress + conditionSize);
 
-            if (isWhile || isBegin) {
+            // an empty loop body leaves the closing again right behind the while, so both become one row
+            bool isWhileAgain = false;
+            if (isWhile && code.size() >= conditionSize + 4) {
+                const u64 againOffset = instructionDataAddress + conditionSize + 2;
+                const u16 againOpcode = (code[conditionSize + 2] << 8) | code[conditionSize + 3];
+                const OpcodeDef* againDef = decodeOpcode(againOpcode, m_variant);
+
+                isWhileAgain = againDef != nullptr && againDef->flow == Flow::Jump && m_codeStarts.contains(againOffset) &&
+                               !m_labels.contains(againOffset + 0x200) && !m_jumpSources.contains(againOffset + 0x200) &&
+                               !m_endCounts.contains(againOffset + 0x200) && (againOpcode & 0x0FFF) == virtualAddress;
+            }
+
+            // Octo writes a skip followed by a jump back to a loop head as if ... then again
+            bool isThenAgain = false;
+            if (guessOcto && isSkip && !isWhile && !isBegin && code.size() >= conditionSize + 2) {
+                const u64 jumpOffset = instructionDataAddress + conditionSize;
+                const u16 jumpOpcode = (code[conditionSize] << 8) | code[conditionSize + 1];
+                const OpcodeDef* jumpDef = decodeOpcode(jumpOpcode, m_variant);
+                const u16 jumpTarget = jumpOpcode & 0x0FFF;
+
+                // nothing may reach the jump itself, or it would be hidden inside the row
+                isThenAgain = jumpDef != nullptr && jumpDef->flow == Flow::Jump && m_codeStarts.contains(jumpOffset) &&
+                              !m_labels.contains(jumpOffset + 0x200) && !m_jumpSources.contains(jumpOffset + 0x200) &&
+                              !m_endCounts.contains(jumpOffset + 0x200) && jumpTarget != jumpOffset + 0x200 && isLoopHead(jumpTarget);
+            }
+
+            if (isWhileAgain) {
+                size = conditionSize + 4;
+            } else if (isWhile || isBegin || isThenAgain) {
                 size = conditionSize + 2;
             } else if (!comparison.empty()) {
                 size = 6;
@@ -663,7 +691,10 @@ namespace hex::plugin::chip8 {
                 const std::string negated = !comparison.empty() ? guessComparison(instructionDataAddress, code, true) : skipCondition(opcode, true);
 
                 inst.mnemonic = isWhile ? "while" : "if";
-                inst.operators = isWhile ? negated : negated + " begin";
+                inst.operators = isWhileAgain ? negated + " again" : (isWhile ? negated : negated + " begin");
+            } else if (isThenAgain) {
+                inst.mnemonic = "if";
+                inst.operators = (!comparison.empty() ? comparison : skipCondition(opcode, false)) + " then again";
             } else if (!comparison.empty()) {
                 inst.mnemonic = "if";
                 inst.operators = comparison + " then";
@@ -696,10 +727,11 @@ namespace hex::plugin::chip8 {
             const bool loopHead = guessOcto && isLoopHead(virtualAddress);
             if (loopHead) inst.mnemonic = "loop " + inst.mnemonic;
 
-            // blocks end before the instruction they end at, and before a loop that starts there
+            // blocks end on the row of their last instruction, which keeps nested ends away from the next if
             if (guessOcto) {
-                if (auto ends = m_endCounts.find(virtualAddress); ends != m_endCounts.end()) {
-                    for (int i = 0; i < ends->second; i++) inst.mnemonic = "end " + inst.mnemonic;
+                if (auto ends = m_endCounts.find(virtualAddress + size); ends != m_endCounts.end()) {
+                    std::string& target = inst.operators.empty() ? inst.mnemonic : inst.operators;
+                    for (int i = 0; i < ends->second; i++) target += " end";
                 }
             }
 

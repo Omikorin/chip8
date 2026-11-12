@@ -46,6 +46,10 @@ namespace hex::plugin::chip8 {
         std::map<u16, std::set<u64>> m_jumpSources; // file offsets of the jumps to a virtual address
         std::set<u16> m_callTargets;
         std::set<u64> m_whileJumps; // file offsets of loop exit jumps that Octo writes as while
+        std::set<u64> m_beginJumps; // file offsets of jumps that Octo writes as if begin
+        std::set<u64> m_elseJumps; // file offsets of jumps that Octo writes as else
+        std::map<u64, int> m_endCounts; // number of blocks that end at a virtual address
+        std::set<u64> m_hiddenLabels; // virtual addresses of labels that only structured jumps reach
 
         using RoutineKey = std::pair<u64, std::optional<u16>>; // file offset and i on entry, nullopt if unknown
         std::map<RoutineKey, std::optional<u16>> m_routineSummaries; // i on return
@@ -59,7 +63,9 @@ namespace hex::plugin::chip8 {
 
         void analyzeControlFlow();
         void groupData(u64 fileSize);
-        void findWhileExits();
+        void findStructure();
+        size_t guardSize(u64 jumpOffset) const;
+        bool hasVisibleLabel(u64 virtualAddress) const;
         std::optional<u16> traceRoutine(u64 entryFileOffset, std::optional<u16> entryI);
         const char* hexPrefix() const;
         std::string formatByte(u8 value) const;

@@ -25,6 +25,10 @@ namespace hex::plugin::chip8 {
         m_jumpSources.clear();
         m_callTargets.clear();
         m_whileJumps.clear();
+        m_beginJumps.clear();
+        m_elseJumps.clear();
+        m_endCounts.clear();
+        m_hiddenLabels.clear();
         m_routineSummaries.clear();
         m_activeRoutines.clear();
 
@@ -44,69 +48,152 @@ namespace hex::plugin::chip8 {
         traceRoutine(0x0, std::nullopt);
 
         if (m_guessPreprocessor && m_syntax == Syntax::Octo)
-            findWhileExits();
+            findStructure();
 
         groupData(provider->getActualSize());
     }
 
-    // Octo compiles loop while to a skip and a jump to the instruction behind the closing again
-    void CHIP8Disassembler::findWhileExits() {
+    // size of the skip, or of the comparison of three instructions, that guards the jump at jumpOffset, 0 if there is none
+    size_t CHIP8Disassembler::guardSize(u64 jumpOffset) const {
         auto provider = ImHexApi::Provider::get();
 
-        // file offsets of the first instruction of a loop and of the jump that closes it
-        struct Loop {
-            u64 head, jump;
-        };
-
-        std::vector<Loop> loops;
-        for (const auto& [target, sources] : m_jumpSources) {
-            if (isLoopHead(target))
-                loops.push_back({ u64(target - 0x200), *sources.begin() });
+        if (jumpOffset >= 6) {
+            u8 bytes[6] = {0};
+            provider->read(jumpOffset - 6, bytes, 6);
+            if (!guessComparison(jumpOffset - 6, bytes, false).empty()) return 6;
         }
 
-        // a skip, or a comparison of three instructions, directly before the jump
-        auto hasCondition = [&](u64 jumpOffset) {
-            if (jumpOffset >= 6) {
-                u8 bytes[6] = {0};
-                provider->read(jumpOffset - 6, bytes, 6);
-                if (!guessComparison(jumpOffset - 6, bytes, false).empty()) return true;
-            }
+        if (jumpOffset < 2 || !m_codeStarts.contains(jumpOffset - 2)) return 0;
 
-            if (jumpOffset < 2 || !m_codeStarts.contains(jumpOffset - 2)) return false;
+        u8 bytes[2] = {0};
+        provider->read(jumpOffset - 2, bytes, 2);
+        const u16 opcode = (bytes[0] << 8) | bytes[1];
+        const OpcodeDef* def = decodeOpcode(opcode, m_variant);
 
-            u8 bytes[2] = {0};
-            provider->read(jumpOffset - 2, bytes, 2);
-            const u16 opcode = (bytes[0] << 8) | bytes[1];
-            const OpcodeDef* def = decodeOpcode(opcode, m_variant);
+        return (def != nullptr && def->flow == Flow::Skip && !skipCondition(opcode, false).empty()) ? 2 : 0;
+    }
 
-            return def != nullptr && def->flow == Flow::Skip && !skipCondition(opcode, false).empty();
+    // Octo compiles loop while, if begin and else to a skip and a jump to the end of the block
+    void CHIP8Disassembler::findStructure() {
+        auto provider = ImHexApi::Provider::get();
+
+        // half open range of file offsets
+        struct Block {
+            u64 start, end;
         };
 
-        for (const Loop& loop : loops) {
-            const u16 exit = u16(loop.jump + 2 + 0x200);
+        auto partiallyOverlaps = [](const Block& a, const Block& b) {
+            const bool overlaps = a.start < b.end && b.start < a.end;
+            const bool nested = (a.start >= b.start && a.end <= b.end) || (b.start >= a.start && b.end <= a.end);
 
-            auto sources = m_jumpSources.find(exit);
-            if (sources == m_jumpSources.end() || m_callTargets.contains(exit)) continue;
+            return overlaps && !nested;
+        };
 
-            auto label = m_labels.find(exit);
-            if (label != m_labels.end() && !label->second.starts_with("label_")) continue;
+        // loops end behind their closing jump
+        std::vector<Block> loops;
+        for (const auto& [target, sources] : m_jumpSources) {
+            if (isLoopHead(target))
+                loops.push_back({ u64(target) - 0x200, *sources.begin() + 2 });
+        }
 
-            // while only leaves the innermost loop, so jumps from a nested loop are something else
-            auto isWhileJump = [&](u64 jumpOffset) {
-                if (jumpOffset < loop.head || jumpOffset >= loop.jump) return false;
-                if (m_labels.contains(jumpOffset + 0x200) || !hasCondition(jumpOffset)) return false;
+        // a forward jump that a condition guards, with the range from the start of the condition to where the jump lands
+        struct Guarded {
+            u64 jump;
+            Block range;
+            u64 closes; // where the block ends, which is behind its else if it has one
+            u64 elseJump = 0;
+        };
 
-                return std::none_of(loops.begin(), loops.end(), [&](const Loop& inner) {
-                    return inner.head != loop.head && inner.head >= loop.head && inner.jump <= loop.jump &&
-                           jumpOffset >= inner.head && jumpOffset < inner.jump;
-                });
-            };
+        std::vector<Guarded> guarded;
+        for (const auto& [target, sources] : m_jumpSources) {
+            const u64 end = u64(target) - 0x200;
+            if (m_callTargets.contains(target) || !m_codeStarts.contains(end)) continue;
 
-            // any other way to reach the instruction behind the loop means its label is real
-            if (!std::ranges::all_of(sources->second, isWhileJump)) continue;
+            for (u64 jump : sources) {
+                if (end <= jump + 2 || m_labels.contains(jump + 0x200)) continue;
 
-            m_whileJumps.insert(sources->second.begin(), sources->second.end());
-            m_labels.erase(exit);
+                const size_t size = guardSize(jump);
+                if (size != 0) guarded.push_back({ jump, { jump - size, end }, end });
+            }
+        }
+
+        std::vector<Guarded> blocks;
+        for (const Guarded& candidate : guarded) {
+            auto loop = std::ranges::find_if(loops, [&](const Block& l) {
+                return l.end == candidate.range.end && candidate.range.start >= l.start && candidate.jump < l.end - 2;
+            });
+
+            // while only leaves the innermost loop, so a jump out of a nested loop is something else
+            const bool leavesLoop = loop != loops.end() && std::ranges::none_of(loops, [&](const Block& inner) {
+                return inner.start != loop->start && inner.start >= loop->start && inner.end <= loop->end &&
+                       candidate.jump >= inner.start && candidate.jump < inner.end;
+            });
+
+            if (leavesLoop) {
+                m_whileJumps.insert(candidate.jump);
+            } else {
+                blocks.push_back(candidate);
+            }
+        }
+
+        // Octo blocks nest, so a jump that crosses the edge of a loop or of another block is a plain jump
+        std::vector<Guarded> accepted;
+        for (const Guarded& block : blocks) {
+            const bool nests = std::ranges::none_of(loops, [&](const Block& l) { return partiallyOverlaps(block.range, l); }) &&
+                               std::ranges::none_of(blocks, [&](const Guarded& other) { return &other != &block && partiallyOverlaps(block.range, other.range); });
+
+            if (nests) accepted.push_back(block);
+        }
+
+        // an unconditional jump as the last instruction of a block makes it an else, and the block ends behind that jump's target
+        for (Guarded& block : accepted) {
+            const u64 elseJump = block.range.end - 2;
+            if (elseJump <= block.jump || !m_codeStarts.contains(elseJump) || m_labels.contains(elseJump + 0x200) || guardSize(elseJump) != 0)
+                continue;
+
+            u8 bytes[2] = {0};
+            provider->read(elseJump, bytes, 2);
+            const u16 opcode = (bytes[0] << 8) | bytes[1];
+
+            const OpcodeDef* def = decodeOpcode(opcode, m_variant);
+            const u16 target = opcode & 0x0FFF;
+            if (def == nullptr || def->flow != Flow::Jump || target < 0x200 || m_callTargets.contains(target)) continue;
+
+            const u64 end = u64(target) - 0x200;
+            if (end <= block.range.end || !m_codeStarts.contains(end)) continue;
+
+            // another block that ends where this one does would contain the jump, so it would not be an else
+            const Block extended{ block.range.start, end };
+            const bool nests = std::ranges::none_of(loops, [&](const Block& l) { return partiallyOverlaps(extended, l); }) &&
+                               std::ranges::none_of(accepted, [&](const Guarded& other) {
+                                   if (&other == &block) return false;
+
+                                   return other.range.end == block.range.end || partiallyOverlaps(extended, { other.range.start, other.closes });
+                               });
+
+            if (nests) {
+                block.elseJump = elseJump;
+                block.closes = end;
+            }
+        }
+
+        for (const Guarded& block : accepted) {
+            m_beginJumps.insert(block.jump);
+            m_endCounts[block.closes + 0x200] += 1;
+
+            if (block.elseJump != 0) m_elseJumps.insert(block.elseJump);
+        }
+
+        // a label that only these jumps reach is not part of the source
+        for (const auto& [target, sources] : m_jumpSources) {
+            auto label = m_labels.find(target);
+            if (label == m_labels.end() || !label->second.starts_with("label_") || m_callTargets.contains(target)) continue;
+
+            const bool onlyStructured = std::ranges::all_of(sources, [&](u64 jump) {
+                return m_whileJumps.contains(jump) || m_beginJumps.contains(jump) || m_elseJumps.contains(jump);
+            });
+
+            if (onlyStructured) m_hiddenLabels.insert(target);
         }
     }
 
@@ -393,6 +480,10 @@ namespace hex::plugin::chip8 {
         return m_syntax == Syntax::Chipper ? "#" : "0x";
     }
 
+    bool CHIP8Disassembler::hasVisibleLabel(u64 virtualAddress) const {
+        return m_labels.contains(virtualAddress) && !m_hiddenLabels.contains(virtualAddress);
+    }
+
     std::string CHIP8Disassembler::formatByte(u8 value) const {
         if (m_decimalBytes) return fmt::format("{}", value);
 
@@ -525,7 +616,7 @@ namespace hex::plugin::chip8 {
             u16 nnn = opcode & 0x0FFF;
 
             auto getTarget = [&](u16 targetAddr) -> std::string {
-                if (m_labels.contains(targetAddr)) return m_labels[targetAddr];
+                if (hasVisibleLabel(targetAddr)) return m_labels[targetAddr];
                 return fmt::format("{}{:03X}", hexPrefix(), targetAddr);
             };
 
@@ -543,13 +634,14 @@ namespace hex::plugin::chip8 {
             std::string comparison;
             if (guessOcto) comparison = guessComparison(instructionDataAddress, code, false);
 
-            // a skip right before a loop exit jump is Octo's while, and both become one row
+            // a condition right before a structured jump is Octo's while or if begin, and both become one row
             const size_t conditionSize = comparison.empty() ? size : 6;
             const bool isSkip = !comparison.empty() || (def != nullptr && def->flow == Flow::Skip);
-            const bool isWhile = guessOcto && isSkip && code.size() >= conditionSize + 2 &&
-                                 m_whileJumps.contains(instructionDataAddress + conditionSize);
+            const bool hasJump = guessOcto && isSkip && code.size() >= conditionSize + 2;
+            const bool isWhile = hasJump && m_whileJumps.contains(instructionDataAddress + conditionSize);
+            const bool isBegin = hasJump && m_beginJumps.contains(instructionDataAddress + conditionSize);
 
-            if (isWhile) {
+            if (isWhile || isBegin) {
                 size = conditionSize + 2;
             } else if (!comparison.empty()) {
                 size = 6;
@@ -566,14 +658,20 @@ namespace hex::plugin::chip8 {
 
             auto byteFormatter = [this](u8 value) { return formatByte(value); };
 
-            if (isWhile) {
-                inst.mnemonic = "while";
-                inst.operators = !comparison.empty() ? guessComparison(instructionDataAddress, code, true) : skipCondition(opcode, true);
+            if (isWhile || isBegin) {
+                // the jump leaves the block when the condition holds, so the block itself runs when it does not
+                const std::string negated = !comparison.empty() ? guessComparison(instructionDataAddress, code, true) : skipCondition(opcode, true);
+
+                inst.mnemonic = isWhile ? "while" : "if";
+                inst.operators = isWhile ? negated : negated + " begin";
             } else if (!comparison.empty()) {
                 inst.mnemonic = "if";
                 inst.operators = comparison + " then";
             } else if (def == nullptr) {
                 inst.mnemonic = "invalid";
+                inst.operators = "";
+            } else if (guessOcto && def->flow == Flow::Jump && m_elseJumps.contains(instructionDataAddress)) {
+                inst.mnemonic = "else";
                 inst.operators = "";
             } else if (guessOcto && def->flow == Flow::Jump && nnn == virtualAddress) {
                 inst.mnemonic = "loop";
@@ -595,12 +693,19 @@ namespace hex::plugin::chip8 {
 
             moveFirstTokenToMnemonic(inst.mnemonic, inst.operators);
 
-            if (m_labels.contains(virtualAddress)) {
-                if (guessOcto && isLoopHead(virtualAddress)) {
-                    inst.mnemonic = fmt::format("loop {}", inst.mnemonic);
-                } else {
-                    inst.mnemonic = labelPrefix(m_labels[virtualAddress], inst.mnemonic);
+            const bool loopHead = guessOcto && isLoopHead(virtualAddress);
+            if (loopHead) inst.mnemonic = "loop " + inst.mnemonic;
+
+            // blocks end before the instruction they end at, and before a loop that starts there
+            if (guessOcto) {
+                if (auto ends = m_endCounts.find(virtualAddress); ends != m_endCounts.end()) {
+                    for (int i = 0; i < ends->second; i++) inst.mnemonic = "end " + inst.mnemonic;
                 }
+            }
+
+            // loop replaces the label of a loop head, but names like main stay
+            if (hasVisibleLabel(virtualAddress) && !(loopHead && m_labels[virtualAddress].starts_with("label_"))) {
+                inst.mnemonic = labelPrefix(m_labels[virtualAddress], inst.mnemonic);
             }
         } else {
             size_t dataLen = 1;
